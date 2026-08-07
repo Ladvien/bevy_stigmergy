@@ -154,9 +154,14 @@ fn the_dependency_list_stays_closed() {
         // `serde.workspace = true` reads as `serde` rather than as a crate called
         // `serde.workspace`. A crate name cannot contain a dot, so nothing real is truncated —
         // and the check keeps biting on the part that matters, the name before it.
-        let Some(name) = line.split(['=', ' ', '.']).next() else {
+        let name = line.split(['=', ' ', '.']).next().unwrap_or("");
+        // A dependency line is `name = ...` or `name.workspace = true`. Anything else inside this
+        // table is a CONTINUATION of a multi-line value — a feature array's entries, a closing
+        // bracket — and is not a crate name. Reading one as a crate name produced a genuinely
+        // baffling failure ("declares `\"bevy_asset\",`"), so continuations are skipped by shape.
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
             continue;
-        };
+        }
         assert!(
             ALLOWED_DEPS.contains(&name),
             "bevy_stigmergy declares `{name}`, which is not in its allowed set {ALLOWED_DEPS:?}.\n\
