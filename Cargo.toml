@@ -1,0 +1,21 @@
+[package]
+name = "bevy_stigmergy"
+version = "0.1.0"
+edition = "2024"
+description = "N-channel stigmergic influence fields over a fixed cell grid: wall-masked deposits, evaporation, diffusion and gradient queries, plus a vectorial rally pheromone."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Ladvien/bevy_stigmergy"
+keywords = ["bevy", "gamedev", "ai", "stigmergy", "influence-map"]
+categories = ["game-development", "simulation"]
+publish = false
+
+# **glam types only — no ECS, no app, no renderer.** The grids are plain data; the CALLER owns the
+# resources, the systems and the schedule. That is the point rather than an omission: a field like this
+# is only useful if the game decides when it ticks and in what order relative to everything else.
+[dependencies]
+bevy_math = { version = "0.19.0", default-features = false, features = ["nostd-libm"] }
+# The diffusion is a pure stencil over disjoint output slots — each cell reads the PREVIOUS grid and
+# writes its own slot, with no cross-cell float reduction — so its result is identical for any thread
+# count. Dourvas, Sirakoulis & Adamatzky (2019, IEEE Access) parallelise the same reaction-diffusion CA
+# on exactly this basis. Kept because removing it would be a rewrite, not a simplification.
+rayon = "1"
