@@ -24,6 +24,12 @@ That list is not tidiness. A field like this is only reusable if the **caller** 
 - **No `unwrap()`**, no `expect` on caller data, no panicking index. Deposits arrive from gameplay and cell coordinates arrive from callers; both must be handled, not asserted.
 - **One path per feature.** No fallbacks, no legacy shims, no stub placeholders. A field with two update paths produces group behaviour nobody can trace back to a rule.
 
-## In the monorepo
+## Where the boundary falls
 
-The game wraps this as `Stig(StigGrid<CHANNEL_COUNT>)` in `ai::field` (`src/ai/field.rs:134`), which is where the dungeon's world↔cell mapping and `line_of_sight` live — this crate never learns about either. Root `CLAUDE.md` and `TESTING.md` carry the project-wide rules; neither is part of this mirror.
+Three things belong to the caller, and each is a thing this crate deliberately cannot do:
+
+- **World space.** The grid thinks in cells. Whatever maps your world coordinates onto them — and back — is yours, and it is usually the same type that already knows where the walls are.
+- **The schedule.** When deposits drain, when evaporation runs, and where both sit relative to the agents reading the field are gameplay decisions. This crate registers nothing.
+- **What a wall is.** Diffusion moves value only between floor cells, so the field routes around obstacles for free; but the floor set is something you hand in, not something it discovers.
+
+A wrapper that holds those three and delegates the rest is the shape this is meant to be used in.

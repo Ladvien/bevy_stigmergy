@@ -6,6 +6,10 @@ Stigmergic influence fields over a fixed cell grid: `N` scalar channels that age
 
 > **This repo is a read-only mirror.** It is split out of [`Ladvien/foundation_vs_slop`](https://github.com/Ladvien/foundation_vs_slop) with `git subtree split`, history intact. Issues and PRs belong upstream.
 
+![A dark grid where ninety pale and amber dots move between a nest and a food source; a bright amber trail forms through a gap in a wall while older, dimmer trails elsewhere fade away](docs/foraging.gif)
+
+That is `examples/foraging.rs`. Ninety foragers, a nest, a food source, and a wall with two gaps. **No agent has a map, a route, or any idea where the gaps are** — each reads three numbers at the cell it is standing on and steers by the gradient. The bright path is emergent, and the dim ones fading beside it are the point: evaporation is how the colony forgets a route that stopped paying.
+
 ## The idea
 
 Stigmergy is coordination *through the environment*. Agents write into a shared field and read it back, so a crowd converges on a trail, disperses from a threat, or recruits toward an alarm without anybody negotiating — the field is computed once and shared by all of them, and the group behaviour falls out.
@@ -56,14 +60,15 @@ Written to be bit-reproducible, because a simulation that hashes its state canno
 
 ## Examples
 
-Both render the field as ASCII in the terminal — no window, no GPU.
-
 ```sh
-cargo run -p bevy_stigmergy --example trail   # a scent trail spreads, fades, and respects walls
-cargo run -p bevy_stigmergy --example rally   # the vectorial pheromone tracking a moving target
+cargo run -p bevy_stigmergy --example trail     # terminal: a scent trail spreads, fades, respects walls
+cargo run -p bevy_stigmergy --example rally     # terminal: the vectorial pheromone tracking a target
+cargo run -p bevy_stigmergy --example foraging  # the gif above. Needs a GPU.
 ```
 
-`trail` lays a channel along a walked path across a map with a wall and a single gap, so you can watch diffusion go through the gap and not through the wall. `rally` has three fixed scouts marking a target that keeps moving, then stops marking so you can see the recruitment expire itself.
+`trail` and `rally` render the field as ASCII — no window, no GPU. `trail` lays a channel along a walked path across a map with a wall and a single gap, so you can watch diffusion go through the gap and not through the wall. `rally` has three fixed scouts marking a target that keeps moving, then stops marking so you can see the recruitment expire itself.
+
+`foraging` is three channels at once — a HOME beacon, a FOOD beacon, and a TRAIL that only laden foragers lay — and it is the example to read if you are tuning this into a game, because the single hardest thing here is picking weights that are in scale with each other. Measured in that example, a beacon gradient averages about `0.09` per cell. The first wander term tried was `2.2`, which is *larger than the homing signal it competes with*, so laden foragers wandered the whole map laying trail everywhere and the "path" was an undifferentiated wash. Steering weights have to be set against `weight * |gradient|`, not by taste — and the way to find out is to print the gradient magnitudes rather than squint at the picture.
 
 ## License
 

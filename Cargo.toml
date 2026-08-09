@@ -19,3 +19,10 @@ bevy_math = { version = "0.19.0", default-features = false, features = ["nostd-l
 # count. Dourvas, Sirakoulis & Adamatzky (2019, IEEE Access) parallelise the same reaction-diffusion CA
 # on exactly this basis. Kept because removing it would be a rewrite, not a simplification.
 rayon = "1"
+
+# **Examples only.** The crate itself takes `bevy_math` and `rayon` — no ECS, no app, no renderer, which
+# is the whole point and what `tests/leaf.rs` enforces by reading `[dependencies]` only, deliberately.
+# The `foraging` example needs a window and a 2D camera to show a trail forming, so it takes the full
+# umbrella here, where it cannot reach a consumer's dependency graph.
+[dev-dependencies]
+bevy = { version = "0.19.0" }
