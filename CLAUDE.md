@@ -21,6 +21,7 @@ That list is not tidiness. A field like this is only reusable if the **caller** 
 ## Rules
 
 - **Bevy 0.19 is pinned.** Read the vendored `bevy_math-0.19.0` source, not bevy.org — that documents `main` and has been wrong for this pin more than once.
+- Consult Bevy documentation often. It can be found at codex_fs/offline_reference_docs/bevy-0.19-book/
 - **No `unwrap()`**, no `expect` on caller data, no panicking index. Deposits arrive from gameplay and cell coordinates arrive from callers; both must be handled, not asserted.
 - **One path per feature.** No fallbacks, no legacy shims, no stub placeholders. A field with two update paths produces group behaviour nobody can trace back to a rule.
 
