@@ -4,7 +4,7 @@ Stigmergic influence fields over a fixed cell grid: `N` scalar channels that age
 
 ## Source of truth
 
-The source of truth for this crate is [`Ladvien/foundation_vs_slop`](https://github.com/Ladvien/foundation_vs_slop) at `crates/bevy_stigmergy/`. If you are reading this in a standalone `Ladvien/bevy_stigmergy` checkout, that is a read-only `git subtree split` mirror — **changes made here cannot be pulled back**. Make them upstream.
+This repository, [`Ladvien/bevy_stigmergy`](https://github.com/Ladvien/bevy_stigmergy), is canonical since 2026-10-23: it moved to Bevy 0.20 while `foundation_vs_slop/crates/bevy_stigmergy` stays frozen on 0.19. Do not mirror over it with `scripts/mirror_crates.sh`. MIT OR Apache-2.0.
 
 ## Build and test
 
@@ -20,8 +20,7 @@ That list is not tidiness. A field like this is only reusable if the **caller** 
 
 ## Rules
 
-- **Bevy 0.19 is pinned.** Read the vendored `bevy_math-0.19.0` source, not bevy.org — that documents `main` and has been wrong for this pin more than once.
-- Consult Bevy documentation often. It can be found at codex_fs/offline_reference_docs/bevy-0.19-book/
+- **Bevy 0.20 is pinned.** Read the vendored `bevy_math-0.20.0` source, not bevy.org — that documents `main` and has been wrong for this pin more than once.
 - **No `unwrap()`**, no `expect` on caller data, no panicking index. Deposits arrive from gameplay and cell coordinates arrive from callers; both must be handled, not asserted.
 - **One path per feature.** No fallbacks, no legacy shims, no stub placeholders. A field with two update paths produces group behaviour nobody can trace back to a rule.
 
