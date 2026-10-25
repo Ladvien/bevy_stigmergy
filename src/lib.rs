@@ -28,9 +28,14 @@
 //!
 //! # Cell space, not world space
 //!
-//! Every entry point takes an `IVec2` **cell**. The crate has no idea how big a cell is or where the
-//! grid sits in the world, and it does not want to — a caller that already owns a world↔cell mapping
-//! would otherwise have to keep a second copy of it here, and the two would drift.
+//! Every entry point takes an `IVec2` **cell**. The crate does not decide how big a cell is or where the
+//! grid sits in the world.
+//!
+//! [`CellFrame`] is an optional plain value type for the mapping nearly every caller writes anyway — an
+//! axis-aligned grid of uniform cells: `world_to_cell`, `cell_centre`, the ascending `cells()` a floor
+//! set wants, and `covering` for a world rectangle. It is a convenience, not a requirement: a caller with
+//! a hex sheet, a rotated board or a camera-relative projection ignores it and keeps its own mapping, and
+//! nothing in the crate behaves differently either way.
 //!
 //! # Determinism
 //!
@@ -51,10 +56,12 @@
 //! (an ECS query, a hash map) must sort its batch before submitting. This crate cannot do that for you:
 //! it never sees the batch, only the individual deposits.
 
+mod frame;
 pub mod grid;
 mod scalar;
 mod vector;
 
+pub use frame::CellFrame;
 pub use grid::{in_grid, row_major};
 pub use scalar::{ChannelDef, StigGrid};
 pub use vector::{RallyDef, RallyGrid};
@@ -67,6 +74,111 @@ mod tests {
     /// A `w`×`h` grid whose floor set is every cell — ascending row-major, as the contract requires.
     fn all_floor(w: usize, h: usize) -> impl Iterator<Item = IVec2> {
         (0..h as i32).flat_map(move |y| (0..w as i32).map(move |x| IVec2::new(x, y)))
+    }
+
+    // ---- Issue #3: an out-of-range channel is a documented empty answer, never a panic. ----
+
+    /// The two indices a bad host config actually produces: exactly `N`, and the largest `usize`.
+    const BAD_CHANNELS: [usize; 2] = [2, usize::MAX];
+
+    #[test]
+    fn an_undefined_channel_samples_as_zero() {
+        let mut g = StigGrid::<2>::new(4, 4, all_floor(4, 4), [ChannelDef::default(); 2]);
+        g.deposit(0, IVec2::new(1, 1), 5.0);
+        for channel in BAD_CHANNELS {
+            assert_eq!(g.sample_cell(channel, IVec2::new(1, 1)), 0.0, "channel {channel}");
+        }
+        // And the real channel is untouched, so the read did not fall back to channel 0.
+        assert!(g.sample_cell(0, IVec2::new(1, 1)) > 0.0);
+    }
+
+    #[test]
+    fn an_undefined_channel_has_no_gradient() {
+        let mut g = StigGrid::<2>::new(4, 4, all_floor(4, 4), [ChannelDef::default(); 2]);
+        g.deposit(0, IVec2::new(1, 1), 5.0);
+        // One cell out from the deposit's centre, where the slope is real: at the centre itself the
+        // gradient is zero by symmetry, which would make the positive control prove nothing.
+        let on_slope = IVec2::new(2, 1);
+        for channel in BAD_CHANNELS {
+            assert_eq!(g.gradient_cell(channel, on_slope), Vec2::ZERO, "channel {channel}");
+        }
+        assert_ne!(g.gradient_cell(0, on_slope), Vec2::ZERO, "the real channel has a slope here");
+    }
+
+    #[test]
+    fn an_undefined_channel_deposits_nothing() {
+        let mut g = StigGrid::<2>::new(4, 4, all_floor(4, 4), [ChannelDef::default(); 2]);
+        g.deposit(0, IVec2::new(1, 1), 2.0);
+        g.deposit(1, IVec2::new(3, 3), 3.0);
+        let before = g.channels().clone();
+        for channel in BAD_CHANNELS {
+            g.deposit(channel, IVec2::new(2, 2), 9.0);
+        }
+        assert_eq!(g.channels(), &before, "a deposit on an undefined channel must write nothing");
+    }
+
+    #[test]
+    fn an_undefined_channel_has_no_hotspot() {
+        let mut g = StigGrid::<2>::new(4, 4, all_floor(4, 4), [ChannelDef::default(); 2]);
+        g.deposit(0, IVec2::new(1, 1), 5.0);
+        for channel in BAD_CHANNELS {
+            assert_eq!(g.hotspot_cell(channel), (None, 0.0), "channel {channel}");
+        }
+        assert_eq!(g.hotspot_cell(0).0, Some(IVec2::new(1, 1)));
+    }
+
+    // ---- Restoring a field from a save. ----
+
+    #[test]
+    fn a_channel_round_trips_through_the_restore() {
+        let mut g = StigGrid::<2>::new(5, 4, all_floor(5, 4), [ChannelDef::default(); 2]);
+        // A real field with history: several deposits, so values differ per cell.
+        g.deposit(0, IVec2::new(1, 1), 3.0);
+        g.deposit(0, IVec2::new(3, 2), 1.5);
+        g.deposit(1, IVec2::new(0, 0), 2.0);
+        let saved = g.channels().clone();
+
+        let mut restored = StigGrid::<2>::new(5, 4, all_floor(5, 4), [ChannelDef::default(); 2]);
+        for (c, values) in saved.iter().enumerate() {
+            assert!(restored.set_channel(c, values), "channel {c} should restore");
+        }
+        assert_eq!(restored.channels(), &saved);
+    }
+
+    #[test]
+    fn a_restore_of_an_undefined_channel_or_wrong_length_is_refused() {
+        let mut g = StigGrid::<2>::new(3, 3, all_floor(3, 3), [ChannelDef::default(); 2]);
+        g.deposit(0, IVec2::new(1, 1), 1.0);
+        let before = g.channels().clone();
+        let correct = vec![1.0_f32; 9];
+        for channel in BAD_CHANNELS {
+            assert!(!g.set_channel(channel, &correct), "channel {channel} must be refused");
+        }
+        for len in [0usize, 8, 10] {
+            let values = vec![1.0; len];
+            assert!(!g.set_channel(0, &values), "{len} values is not a 3x3 grid");
+        }
+        assert_eq!(g.channels(), &before, "a refused restore must change nothing");
+    }
+
+    #[test]
+    fn a_restore_forces_rock_cells_to_zero_and_rejects_non_finite_values() {
+        // Column 1 is rock. `evaporate_diffuse` skips rock cells on the invariant that they are 0, so a
+        // save that carries a stale value there must not bring it back; and a NaN would poison every sum
+        // downstream.
+        let floor = all_floor(3, 3).filter(|c| c.x != 1);
+        let mut g = StigGrid::<2>::new(3, 3, floor, [ChannelDef::default(); 2]);
+        let mut values = vec![1.0_f32; 9];
+        values[1] = 99.0; // a rock cell, (1, 0)
+        values[4] = f32::NAN; // a rock cell, (1, 1)
+        values[0] = f32::INFINITY; // a floor cell, (0, 0)
+        assert!(g.set_channel(0, &values));
+
+        let channel = &g.channels()[0];
+        assert_eq!(channel[1], 0.0, "rock cell (1, 0) must be 0");
+        assert_eq!(channel[4], 0.0, "rock cell (1, 1) must be 0");
+        assert_eq!(channel[0], 0.0, "a non-finite value must be written as 0");
+        assert_eq!(channel[2], 1.0, "a finite floor value is kept");
     }
 
     #[test]
@@ -99,7 +211,11 @@ mod tests {
         g.evaporate_diffuse(1.0 / 60.0);
         assert_eq!(g.sample_cell(0, IVec2::new(2, 0)), 0.0, "influence must not cross the wall");
         assert_eq!(g.sample_cell(0, IVec2::new(1, 0)), 0.0, "and the wall cell stays zero across the swap");
-        assert_eq!(g.sample_cell(0, IVec2::new(0, 0)), 1.0, "with no floor neighbour it blends toward itself");
+        assert_eq!(
+            g.sample_cell(0, IVec2::new(0, 0)),
+            1.0,
+            "with no floor neighbour it blends toward itself"
+        );
     }
 
     #[test]

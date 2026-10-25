@@ -63,17 +63,11 @@ fn is_wall(c: IVec2) -> bool {
 
 /// Ascending row-major and free of repeats, which is what `StigGrid::new` asks for.
 fn floor_cells() -> impl Iterator<Item = IVec2> {
-    (0..H as i32)
-        .flat_map(|y| (0..W as i32).map(move |x| IVec2::new(x, y)))
-        .filter(|c| !is_wall(*c))
+    (0..H as i32).flat_map(|y| (0..W as i32).map(move |x| IVec2::new(x, y))).filter(|c| !is_wall(*c))
 }
 
 fn world_of(p: Vec2) -> Vec3 {
-    Vec3::new(
-        (p.x - W as f32 * 0.5 + 0.5) * CELL,
-        (H as f32 * 0.5 - p.y - 0.5) * CELL,
-        1.0,
-    )
+    Vec3::new((p.x - W as f32 * 0.5 + 0.5) * CELL, (H as f32 * 0.5 - p.y - 0.5) * CELL, 1.0)
 }
 
 #[derive(Resource)]
@@ -216,7 +210,7 @@ fn step_field(
         // gradient averages ~0.09 per cell; at the first wander weight tried (2.2) the noise term was
         // stronger than the homing signal, so laden foragers wandered the whole field laying trail
         // everywhere and the "path" was a wash. It has to stay well under `beacon_weight * |grad|`.
-        let w = (t * 1.9 + f.seed * 6.28).sin() * 0.9 + (t * 0.7 + f.seed * 3.1).cos() * 0.6;
+        let w = (t * 1.9 + f.seed * std::f32::consts::TAU).sin() * 0.9 + (t * 0.7 + f.seed * 3.1).cos() * 0.6;
         let perp = Vec2::new(-f.dir.y, f.dir.x);
         steer += perp * w * 0.8;
 
@@ -243,18 +237,13 @@ fn step_field(
         if f.pos.distance(target.as_vec2()) < 2.0 {
             f.laden = !f.laden;
             f.dir = -f.dir;
-            sprite.color = if f.laden {
-                Color::srgb(1.0, 0.78, 0.32)
-            } else {
-                Color::srgb(0.85, 0.88, 0.95)
-            };
+            sprite.color = if f.laden { Color::srgb(1.0, 0.78, 0.32) } else { Color::srgb(0.85, 0.88, 0.95) };
         }
 
         tf.translation = world_of(f.pos);
     }
 
     field.0.evaporate_diffuse(DT);
-
 }
 
 fn paint_tiles(field: Res<Field>, mut tiles: Query<(&Tile, &mut Sprite)>) {

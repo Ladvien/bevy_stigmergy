@@ -2,13 +2,17 @@
 
 use bevy_math::{IVec2, Vec2};
 
-use crate::grid::{deposit_disc, floor_sets, in_grid, row_major, FloorCell};
+use crate::grid::{FloorCell, deposit_disc, floor_sets, in_grid, row_major};
 
 /// Tuning for the vectorial pheromone (mirrors [`crate::ChannelDef`], but for the vector store).
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
 pub struct RallyDef {
-    /// Decay coefficient `c_d` (fraction lost per second). Drives both the per-frame evaporation and the
-    /// `(1 - c_d)` term of the accumulation recurrence — evaporation is the automatic "call it off".
+    /// Decay coefficient `c_d`, a fraction lost per unit of the `dt` passed to
+    /// [`RallyGrid::evaporate`]: per second when stepped in seconds, per game-day when stepped in
+    /// game-days. Drives both that step and the `(1 - c_d)` term of the accumulation recurrence —
+    /// evaporation is the automatic "call it off".
     pub decay: f32,
     /// Accumulation gain `c_a`, applied to each deposited intermediate-vector.
     pub accumulate: f32,
@@ -46,12 +50,7 @@ pub struct RallyGrid {
 
 impl RallyGrid {
     /// Allocate an empty vector grid. `floor_cells` has the same contract as [`crate::StigGrid::new`].
-    pub fn new(
-        width: usize,
-        height: usize,
-        floor_cells: impl Iterator<Item = IVec2>,
-        def: RallyDef,
-    ) -> Self {
+    pub fn new(width: usize, height: usize, floor_cells: impl Iterator<Item = IVec2>, def: RallyDef) -> Self {
         let cells = width * height;
         let (floor_cells, floor_mask) = floor_sets(width, height, floor_cells);
         Self {
@@ -72,11 +71,7 @@ impl RallyGrid {
     /// along it).
     #[inline]
     pub fn sample_cell(&self, c: IVec2) -> Vec2 {
-        if in_grid(c, self.width, self.height) {
-            self.grid[row_major(c, self.width)]
-        } else {
-            Vec2::ZERO
-        }
+        if in_grid(c, self.width, self.height) { self.grid[row_major(c, self.width)] } else { Vec2::ZERO }
     }
 
     /// Accumulate a deposited intermediate-vector `s` (Tang's `c_a·s` term), smeared over
@@ -93,7 +88,8 @@ impl RallyGrid {
     }
 
     /// One evaporation step: decay every cell toward zero (the `(1 - c_d)` term / the automatic
-    /// call-off). Iterates floor cells only, which is bit-identical — scaling a zero vector is a no-op.
+    /// call-off). `dt` is in the caller's own time unit; [`RallyDef::decay`] is a fraction lost per
+    /// unit of it. Iterates floor cells only, which is bit-identical — scaling a zero vector is a no-op.
     pub fn evaporate(&mut self, dt: f32) {
         let retain = (1.0 - self.decay * dt).clamp(0.0, 1.0);
         for fc in &self.floor_cells {
