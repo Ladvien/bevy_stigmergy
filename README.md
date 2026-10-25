@@ -4,9 +4,9 @@
 
 Stigmergic influence fields over a fixed cell grid: `N` scalar channels that agents deposit into, which evaporate, diffuse between floor cells, and can be sampled or climbed — plus a vectorial rally pheromone for tracking a moving target.
 
-> **This repo is a read-only mirror.** It is split out of [`Ladvien/foundation_vs_slop`](https://github.com/Ladvien/foundation_vs_slop) with `git subtree split`, history intact. Issues and PRs belong upstream.
+**This repository is canonical.** It is where issues and pull requests belong; the split-out copies elsewhere are the ones that are frozen. MIT OR Apache-2.0.
 
-![A dark grid where ninety pale and amber dots move between a nest and a food source; a bright amber trail forms through a gap in a wall while older, dimmer trails elsewhere fade away](docs/foraging.gif)
+![A dark grid where ninety pale and amber dots move between a nest and a food source; a bright amber trail forms through a gap in a wall while older, dimmer trails elsewhere fade away](https://raw.githubusercontent.com/Ladvien/bevy_stigmergy/main/docs/foraging.gif)
 
 That is `examples/foraging.rs`. Ninety foragers, a nest, a food source, and a wall with two gaps. **No agent has a map, a route, or any idea where the gaps are** — each reads three numbers at the cell it is standing on and steers by the gradient. The bright path is emergent, and the dim ones fading beside it are the point: evaporation is how the colony forgets a route that stopped paying.
 
@@ -38,7 +38,38 @@ let uphill = field.gradient_cell(SCENT, c);
 
 **It does not name your channels.** A channel table is game content. Channels are `usize` indices and `N` is yours to pick, so "what does channel 3 mean" stays a question about your game.
 
-**It works in cell space, not world space.** Every entry point takes an `IVec2` cell. If you already own a world↔cell mapping, this crate keeping a second copy of it would only give the two a chance to drift.
+**It works in cell space, not world space.** Every entry point takes an `IVec2` cell. The crate does not decide how big a cell is or where the grid sits in the world.
+
+[`CellFrame`] is an optional plain value type for the mapping nearly every caller writes anyway — an axis-aligned grid of uniform cells:
+
+```rust
+use bevy_math::Vec2;
+use bevy_stigmergy::CellFrame;
+
+// Cover a 120 x 80 metre field in 2-metre cells.
+let frame = CellFrame::covering(Vec2::new(-60.0, -40.0), Vec2::new(60.0, 40.0), 2.0);
+
+let mut field = StigGrid::<2>::new(frame.width, frame.height, frame.floor_cells(is_floor), [
+    ChannelDef { evaporate: 0.4, diffuse: 0.10, deposit_radius: 1.5 },
+    ChannelDef { evaporate: 1.2, diffuse: 0.05, deposit_radius: 3.0 },
+]);
+
+field.deposit(SCENT, frame.world_to_cell(agent), 1.0);
+let uphill = field.gradient_cell(SCENT, frame.world_to_cell(agent));
+```
+
+`cell_centre`, `contains` and `cells()` (ascending row-major, exactly what `StigGrid::new` wants of its floor set) round it out. It is a convenience, not a requirement: a caller with a hex sheet, a rotated board or a camera-relative projection ignores it and keeps its own mapping, and nothing in the crate behaves differently either way.
+
+## Units and time
+
+The crate has no clock. `evaporate_diffuse(dt)` applies `ChannelDef::evaporate` **per unit of whatever `dt` you pass**: per second when you step in seconds, per game-day when you step in game-days. The same number means different things in each — `0.4` loses 40% of the field per second in the first and 40% per game-day in the second. `diffuse` is different: it is a blend weight applied **per call**, not scaled by `dt`, so two calls at `dt/2` spread twice as much as one call at `dt`.
+
+## Features
+
+- `serde` — `Serialize`/`Deserialize` on `ChannelDef`, `RallyDef` and `CellFrame`. Also turns on `bevy_math/serialize`, which glam's impls need.
+- `reflect` — `bevy_reflect::Reflect` on the same types, for a host that stores them in a Bevy world.
+
+Both are off by default, and neither adds a type to the dependency graph a consumer did not ask for.
 
 ## Two gotchas worth knowing
 
@@ -48,6 +79,13 @@ let uphill = field.gradient_cell(SCENT, c);
 ## Determinism
 
 Written to be bit-reproducible, because a simulation that hashes its state cannot afford otherwise: the neighbour sum keeps a fixed E/W/S/N order (float addition is non-associative); the diffusion is a pure stencil over disjoint output slots, so its result is identical at any thread count — which is what makes the `rayon` pass safe; and skipping rock cells is exact rather than approximate. `channels()` and `cells()` expose the **full** grids so you can fold the rock-cells-stay-zero invariant into your own fingerprint.
+
+## Used by
+
+The rest of the family, so a host learns one shape:
+
+- [`bevy_orca`](https://crates.io/crates/bevy_orca) — the crowd that deposits into this field and steers by its gradient.
+- [`bevy_society`](https://crates.io/crates/bevy_society) — persons whose presence and commotion are channels here.
 
 ## References
 

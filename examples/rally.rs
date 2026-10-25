@@ -52,12 +52,8 @@ fn plot(field: &RallyGrid, target: IVec2, scouts: &[IVec2], title: &str) {
 }
 
 fn main() {
-    let mut field = RallyGrid::new(
-        W,
-        H,
-        all_floor(),
-        RallyDef { decay: 0.35, accumulate: 0.6, deposit_radius: 4.0 },
-    );
+    let mut field =
+        RallyGrid::new(W, H, all_floor(), RallyDef { decay: 0.35, accumulate: 0.6, deposit_radius: 4.0 });
 
     // Three scouts that can see the target and keep marking it. They never move.
     let scouts = [IVec2::new(6, 3), IVec2::new(8, 11), IVec2::new(20, 7)];

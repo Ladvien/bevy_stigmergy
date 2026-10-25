@@ -15,7 +15,12 @@
 use std::path::{Path, PathBuf};
 
 /// Everything `emerge-core` is allowed to depend on. Data and arithmetic, nothing that draws.
-const ALLOWED_DEPS: &[&str] = &["bevy_math", "rayon"];
+///
+/// `serde` and `bevy_reflect` are **optional and value-type only**: they add derive impls to
+/// `ChannelDef`, `RallyDef` and `CellFrame`, behind features a consumer has to ask for. They are listed
+/// here because the check reads `[dependencies]` and cannot see that they are optional — but neither can
+/// schedule anything or draw, so the boundary this test guards is intact.
+const ALLOWED_DEPS: &[&str] = &["bevy_math", "rayon", "serde", "bevy_reflect"];
 
 /// Crate names that would mean the boundary has been crossed, checked as substrings so
 /// `bevy_math`/`bevy_ecs` are caught as readily as `bevy`.
@@ -139,10 +144,8 @@ fn the_dependency_list_stays_closed() {
 
     // Only the `[dependencies]` table — a dev-dependency on something heavier would be a different
     // (and much less alarming) conversation.
-    let deps = manifest
-        .split("[dependencies]")
-        .nth(1)
-        .expect("bevy_stigmergy must declare a [dependencies] table");
+    let deps =
+        manifest.split("[dependencies]").nth(1).expect("bevy_stigmergy must declare a [dependencies] table");
     let deps = deps.split("\n[").next().unwrap_or(deps);
 
     for line in deps.lines() {

@@ -8,11 +8,11 @@ This repository, [`Ladvien/bevy_stigmergy`](https://github.com/Ladvien/bevy_stig
 
 ## Build and test
 
-A leaf — `bevy_math` and `rayon`, nothing else — so it builds and tests on its own: `cargo test -p bevy_stigmergy`.
+A leaf — `bevy_math` and `rayon`, nothing else in the default build — so it builds and tests on its own: `cargo test -p bevy_stigmergy`. The optional `serde` and `reflect` features add only derive impls on value types (`ChannelDef`, `RallyDef`, `CellFrame`), and `cargo test --all-features` covers them.
 
 ## The non-negotiable: the caller owns the schedule
 
-`tests/leaf.rs` is the ratchet. Allowed: `bevy_math`, `rayon`. Forbidden by name: `bevy_ecs`, `bevy_app`, `bevy_render`, `avian`, `wgpu`, `winit`, `emerge`, `foundation_vs_slop`.
+`tests/leaf.rs` is the ratchet. Allowed: `bevy_math`, `rayon`, and the optional `serde` and `bevy_reflect` (value-type derives only). Forbidden by name: `bevy_ecs`, `bevy_app`, `bevy_render`, `avian`, `wgpu`, `winit`, `emerge`, `foundation_vs_slop`.
 
 That list is not tidiness. A field like this is only reusable if the **caller** decides when deposits drain, when evaporation runs, and where both sit relative to the agents reading it — those are gameplay decisions. The moment this crate takes `bevy_app` it starts making them, and the moment it takes a game type it stops being a library at all. Widening the list is a design decision; it should cost a deliberate edit in `tests/leaf.rs`, not a passing `cargo build`.
 
@@ -28,7 +28,7 @@ That list is not tidiness. A field like this is only reusable if the **caller** 
 
 Three things belong to the caller, and each is a thing this crate deliberately cannot do:
 
-- **World space.** The grid thinks in cells. Whatever maps your world coordinates onto them — and back — is yours, and it is usually the same type that already knows where the walls are.
+- **World space.** The grid thinks in cells. Whatever maps your world coordinates onto them — and back — is yours, and it is usually the same type that already knows where the walls are. `CellFrame` is a plain value type for the common case — an axis-aligned grid of uniform cells, `world_to_cell` / `cell_centre` / `cells()` / `covering` — offered because nearly every caller writes the same formula and two copies of it drift. It is not the mapping: a hex sheet, a rotated board or a camera-relative projection ignores it and everything still works. The entry points keep taking `IVec2`, and they always will.
 - **The schedule.** When deposits drain, when evaporation runs, and where both sit relative to the agents reading the field are gameplay decisions. This crate registers nothing.
 - **What a wall is.** Diffusion moves value only between floor cells, so the field routes around obstacles for free; but the floor set is something you hand in, not something it discovers.
 

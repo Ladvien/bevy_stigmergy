@@ -51,11 +51,7 @@ fn plot(field: &StigGrid<2>, channel: usize, title: &str) {
         let row: String = (0..W as i32)
             .map(|x| {
                 let c = IVec2::new(x, y);
-                if x == WALL_X && y != GAP_Y {
-                    '│'
-                } else {
-                    glyph(field.sample_cell(channel, c), peak)
-                }
+                if x == WALL_X && y != GAP_Y { '│' } else { glyph(field.sample_cell(channel, c), peak) }
             })
             .collect();
         println!("  {row}");

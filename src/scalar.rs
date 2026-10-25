@@ -2,14 +2,24 @@
 
 use bevy_math::{IVec2, Vec2};
 
-use crate::grid::{deposit_disc, floor_sets, in_grid, row_major, FloorCell};
+use crate::grid::{FloorCell, deposit_disc, floor_sets, in_grid, row_major};
 
 /// Per-channel behaviour. The caller supplies one of these per channel, typically from its own config.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
 pub struct ChannelDef {
-    /// Fraction of value lost per second (ACO evaporation ρ).
+    /// Fraction of value lost per unit of the `dt` passed to [`StigGrid::evaporate_diffuse`]: per
+    /// second when stepped in seconds, per game-day when stepped in game-days.
+    ///
+    /// The crate has no clock, so it cannot know which. A siege field stepped at 60 Hz and a society
+    /// field stepped once a game-day are both correct uses of the same number, and the same value means
+    /// something different in each: `0.4` loses 40% of the field per second in the first and 40% per
+    /// game-day in the second.
     pub evaporate: f32,
-    /// Blend weight `[0,1]` toward the 4-neighbour average each update (Ch.29 diffusion).
+    /// Blend weight `[0,1]` toward the 4-neighbour average, applied **per call** of
+    /// [`StigGrid::evaporate_diffuse`] and *not* scaled by its `dt`. Calling it twice at `dt/2` spreads
+    /// twice as much as calling it once at `dt`.
     pub diffuse: f32,
     /// Radius, **in cells**, that a single deposit smears over (placement kernel).
     pub deposit_radius: f32,
@@ -50,9 +60,10 @@ pub struct StigGrid<const N: usize> {
 impl<const N: usize> StigGrid<N> {
     /// Allocate empty channels over a `width`×`height` grid whose floor cells are `floor_cells`.
     ///
-    /// `floor_cells` must be **ascending row-major** and free of repeats — see
-    /// [`crate::grid::floor_sets`]. Cells outside the grid are ignored rather than panicking, so a
-    /// caller whose floor set and dimensions disagree gets an empty region, not a crash.
+    /// `floor_cells` must be **ascending row-major** and free of repeats;
+    /// [`crate::CellFrame::cells`] and [`crate::CellFrame::floor_cells`] both are. Cells outside the
+    /// grid are ignored rather than panicking, so a caller whose floor set and dimensions disagree gets
+    /// an empty region, not a crash.
     pub fn new(
         width: usize,
         height: usize,
@@ -74,44 +85,56 @@ impl<const N: usize> StigGrid<N> {
         }
     }
 
-    /// Point read at a cell (query). Off-grid reads as 0.
+    /// Point read at a cell (query). Off-grid reads as 0, and so does an undefined channel.
+    ///
+    /// A channel index comes from the caller's config, so an out-of-range one is a bug in the host, not
+    /// a reason to take the game down: it reads as the empty field.
     #[inline]
     pub fn sample_cell(&self, channel: usize, c: IVec2) -> f32 {
-        if in_grid(c, self.width, self.height) {
-            self.channels[channel][row_major(c, self.width)]
-        } else {
-            0.0
-        }
+        let Some(grid) = self.channels.get(channel) else {
+            return 0.0;
+        };
+        if in_grid(c, self.width, self.height) { grid[row_major(c, self.width)] } else { 0.0 }
     }
 
     /// Direction of *increasing* value, magnitude ≈ the local slope. Central differences on the
     /// 4-neighbour cells; follow it with `+`, flee it with `-`.
+    ///
+    /// An undefined channel has no slope: it reads as [`Vec2::ZERO`], which every steering rule is
+    /// already written to ignore.
     #[inline]
     pub fn gradient_cell(&self, channel: usize, c: IVec2) -> Vec2 {
+        let Some(grid) = self.channels.get(channel) else {
+            return Vec2::ZERO;
+        };
         let at = |dx: i32, dy: i32| -> f32 {
             let n = c + IVec2::new(dx, dy);
-            if in_grid(n, self.width, self.height) {
-                self.channels[channel][row_major(n, self.width)]
-            } else {
-                0.0
-            }
+            if in_grid(n, self.width, self.height) { grid[row_major(n, self.width)] } else { 0.0 }
         };
         Vec2::new(at(1, 0) - at(-1, 0), at(0, 1) - at(0, -1))
     }
 
     /// Add `amount` at `center`, smeared over the channel's `deposit_radius` with linear falloff. Only
     /// floor cells receive value, so deposits do not bleed into rock.
+    ///
+    /// An undefined channel is a no-op: nothing is written, so every channel keeps the value it had.
     pub fn deposit(&mut self, channel: usize, center: IVec2, amount: f32) {
+        let (Some(def), Some(grid)) = (self.defs.get(channel), self.channels.get_mut(channel)) else {
+            return;
+        };
         let (w, h) = (self.width, self.height);
-        let radius = self.defs[channel].deposit_radius;
+        let radius = def.deposit_radius;
         let mask = &self.floor_mask;
-        let grid = &mut self.channels[channel];
         deposit_disc(w, h, mask, center, radius, |i, falloff| {
             grid[i] += amount * falloff;
         });
     }
 
-    /// One evaporation + diffusion step for every channel. `dt` in seconds.
+    /// One evaporation + diffusion step for every channel.
+    ///
+    /// `dt` is in the caller's own time unit and is used only by evaporation —
+    /// [`ChannelDef::evaporate`] is a fraction lost per unit of it. Diffusion is per call, not per unit
+    /// of `dt`.
     ///
     /// Diffusion blends only between floor cells, so influence does not seep through walls.
     ///
@@ -148,28 +171,25 @@ impl<const N: usize> StigGrid<N> {
             // Blend each floor cell toward the average of its floor neighbours (double-buffered, parallel).
             let diffuse = def.diffuse;
             let grid = &channels[ch];
-            diffuse_out
-                .par_iter_mut()
-                .zip(floor_cells.par_iter())
-                .for_each(|(out, fc)| {
-                    let (x, y) = (fc.pos.x, fc.pos.y);
-                    let mut sum = 0.0;
-                    let mut n = 0.0;
-                    for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                        let nb = IVec2::new(x + dx, y + dy);
-                        if nb.x >= 0
-                            && nb.y >= 0
-                            && (nb.x as usize) < w
-                            && (nb.y as usize) < h
-                            && floor_mask[(nb.y as usize) * w + nb.x as usize]
-                        {
-                            sum += grid[(nb.y as usize) * w + nb.x as usize];
-                            n += 1.0;
-                        }
+            diffuse_out.par_iter_mut().zip(floor_cells.par_iter()).for_each(|(out, fc)| {
+                let (x, y) = (fc.pos.x, fc.pos.y);
+                let mut sum = 0.0;
+                let mut n = 0.0;
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let nb = IVec2::new(x + dx, y + dy);
+                    if nb.x >= 0
+                        && nb.y >= 0
+                        && (nb.x as usize) < w
+                        && (nb.y as usize) < h
+                        && floor_mask[(nb.y as usize) * w + nb.x as usize]
+                    {
+                        sum += grid[(nb.y as usize) * w + nb.x as usize];
+                        n += 1.0;
                     }
-                    let avg = if n > 0.0 { sum / n } else { grid[fc.idx] };
-                    *out = grid[fc.idx] * (1.0 - diffuse) + avg * diffuse;
-                });
+                }
+                let avg = if n > 0.0 { sum / n } else { grid[fc.idx] };
+                *out = grid[fc.idx] * (1.0 - diffuse) + avg * diffuse;
+            });
             // Serial scatter: contiguous floor-indexed results → grid-indexed `scratch`, then swap in.
             for (fc, &v) in floor_cells.iter().zip(diffuse_out.iter()) {
                 scratch[fc.idx] = v;
@@ -183,8 +203,13 @@ impl<const N: usize> StigGrid<N> {
     /// `None` when no floor cell carries a positive value. `floor_cells` is ascending-index order and
     /// rock cells are 0 (so they can never beat `best` under the strict `>`), which makes this the
     /// identical **first-max-wins** result as scanning the whole grid.
+    ///
+    /// An undefined channel has no peak: `(None, 0.0)`, the same empty answer it would give for an
+    /// empty real one.
     pub fn hotspot_cell(&self, channel: usize) -> (Option<IVec2>, f32) {
-        let grid = &self.channels[channel];
+        let Some(grid) = self.channels.get(channel) else {
+            return (None, 0.0);
+        };
         let mut best = 0.0f32;
         let mut best_cell = None;
         for fc in &self.floor_cells {
@@ -214,6 +239,28 @@ impl<const N: usize> StigGrid<N> {
         let thresh = 0.5 * peak;
         let hot = self.floor_cells.iter().filter(|fc| per_cell_max(fc.idx) >= thresh).count();
         (peak, hot as f32 / floor as f32)
+    }
+
+    /// Restore a channel from a saved snapshot, for a host that persists its field.
+    ///
+    /// Returns `false` and changes **nothing** when the channel index is out of range, or when `values`
+    /// is not exactly `width * height` long — the two ways a stale or foreign save can arrive.
+    ///
+    /// Floor cells only are copied; rock cells are forced to `0.0`, because
+    /// [`evaporate_diffuse`](Self::evaporate_diffuse) relies on that invariant to skip them. A
+    /// non-finite saved value becomes `0.0`: a NaN in a field poisons every downstream sum, and the
+    /// hotspot and gradient readers would then report a peak nobody can reach.
+    pub fn set_channel(&mut self, channel: usize, values: &[f32]) -> bool {
+        let (Some(grid), true) = (self.channels.get_mut(channel), values.len() == self.width * self.height)
+        else {
+            return false;
+        };
+        grid.fill(0.0);
+        for fc in &self.floor_cells {
+            let v = values[fc.idx];
+            grid[fc.idx] = if v.is_finite() { v } else { 0.0 };
+        }
+        true
     }
 
     /// Every channel's full grid, in channel order.

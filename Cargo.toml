@@ -1,28 +1,46 @@
 [package]
 name = "bevy_stigmergy"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
-description = "N-channel stigmergic influence fields over a fixed cell grid: wall-masked deposits, evaporation, diffusion and gradient queries, plus a vectorial rally pheromone."
+rust-version = "1.97.1"
+description = "Stigmergic influence fields over a fixed cell grid: decaying scalar channels plus a vectorial rally pheromone, on bevy_math."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Ladvien/bevy_stigmergy"
-keywords = ["bevy", "gamedev", "ai", "stigmergy", "influence-map"]
+keywords = ["bevy", "gamedev", "ai", "influence-map", "stigmergy"]
 categories = ["game-development", "simulation"]
-publish = false
+# `docs/` holds the foraging GIF, so it is out of the package.
+include = ["src/**", "Cargo.toml", "README.md", "LICENSE-*"]
 
-# **glam types only — no ECS, no app, no renderer.** The grids are plain data; the CALLER owns the
-# resources, the systems and the schedule. That is the point rather than an omission: a field like this
-# is only useful if the game decides when it ticks and in what order relative to everything else.
+[features]
+default = []
+# Opt-in derives on the value types. `bevy_math/serialize` is needed because `CellFrame` carries `Vec2`,
+# and glam's `Serialize`/`Deserialize` live behind it.
+serde = ["dep:serde", "bevy_math/serialize"]
+# Opt-in `Reflect` on the value types, for a host that stores them in a Bevy world.
+reflect = ["dep:bevy_reflect", "bevy_math/bevy_reflect"]
+
+# **`bevy_math`, not `bevy`, and the feature set is copied from `bevy_internal` on purpose.**
+#
+# This crate needs two types (`Vec2`, `IVec2`), one parallel iterator and no ECS at all. Depending on the
+# whole engine would make a few hundred lines of stencil cost a renderer. The exact features matter
+# beyond tidiness: `bevy_math`'s DEFAULTS turn on `std`, which turns on `glam/std` — swapping glam's
+# transcendentals from libm to std's. Those feed `Quat::from_rotation_*` -> hashed `Transform`s -> the
+# game's replay goldens. `bevy_internal-0.20.0/Cargo.toml` selects `bevy_reflect` and `nostd-libm` on
+# `bevy_math`. This crate takes `nostd-libm` only, a subset, so it still contributes no feature the graph
+# did not already have, and no golden can move because a field changed crates.
 [dependencies]
 bevy_math = { version = "0.20.0", default-features = false, features = ["nostd-libm"] }
-# The diffusion is a pure stencil over disjoint output slots — each cell reads the PREVIOUS grid and
-# writes its own slot, with no cross-cell float reduction — so its result is identical for any thread
-# count. Dourvas, Sirakoulis & Adamatzky (2019, IEEE Access) parallelise the same reaction-diffusion CA
-# on exactly this basis. Kept because removing it would be a rewrite, not a simplification.
+# https://github.com/rayon-rs/rayon — the diffusion stencil's disjoint-slot parallel pass.
 rayon = "1"
+# https://github.com/serde-rs/serde — the `serde` feature only; no derive machinery is compiled unless asked.
+serde = { version = "1", default-features = false, features = ["derive"], optional = true }
+# https://github.com/bevyengine/bevy — the `reflect` feature only, matching this repo's Bevy pin. It is
+# meant for Bevy apps, which already have std.
+bevy_reflect = { version = "0.20.0", default-features = false, optional = true }
 
-# **Examples only.** The crate itself takes `bevy_math` and `rayon` — no ECS, no app, no renderer, which
-# is the whole point and what `tests/leaf.rs` enforces by reading `[dependencies]` only, deliberately.
-# The `foraging` example needs a window and a 2D camera to show a trail forming, so it takes the full
-# umbrella here, where it cannot reach a consumer's dependency graph.
+# **Examples only.** The crate itself takes `bevy_math` and `rayon`, and `tests/leaf.rs` enforces it by
+# reading `[dependencies]` only, deliberately. The `foraging` example needs a window and a 2D camera to
+# show the trail emerging, so it takes the full umbrella here, where it cannot reach a consumer's
+# dependency graph.
 [dev-dependencies]
 bevy = { version = "0.20.0" }
