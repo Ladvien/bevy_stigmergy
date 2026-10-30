@@ -247,7 +247,12 @@ mod tests {
     /// 64×48 with a wall down x = 32 open only at y = 24, and scattered single rock cells: every cell
     /// beside the wall, a rock or the grid edge has fewer than four floor neighbours.
     fn walled_floor() -> impl Iterator<Item = IVec2> {
-        all_floor(64, 48).filter(|c| if c.x == 32 { c.y == 24 } else { (c.x * 7 + c.y * 13) % 11 != 0 })
+        all_floor(64, 48).filter(|&c| on_walled_floor(c))
+    }
+
+    /// Is `c` a floor cell of [`walled_floor`]? Off the grid is not.
+    fn on_walled_floor(c: IVec2) -> bool {
+        in_grid(c, 64, 48) && if c.x == 32 { c.y == 24 } else { (c.x * 7 + c.y * 13) % 11 != 0 }
     }
 
     /// A 20×20 room with a one-cell-wide corridor leaving it east and ending in a dead end at x = 40.
@@ -325,6 +330,78 @@ mod tests {
         g.deposit(0, IVec2::new(1, 1), 1.0);
         g.evaporate_diffuse(1.0 / 60.0);
         assert_eq!(g.sample_cell(0, IVec2::new(1, 1)), 1.0);
+    }
+
+    // ---- Issue #8: the gradient reads a wall as the face nothing crosses, not as a cold cell. ----
+
+    /// A one-channel grid over [`walled_floor`] holding `value(cell)` at every floor cell.
+    fn walled_field(value: impl Fn(IVec2) -> f32) -> StigGrid<1> {
+        let defs = [ChannelDef { evaporate: 0.0, diffuse: 0.0, deposit_radius: 0.0 }];
+        let mut g = StigGrid::<1>::new(64, 48, walled_floor(), defs);
+        let values: Vec<f32> = all_floor(64, 48).map(value).collect();
+        assert!(g.set_channel(0, &values));
+        g
+    }
+
+    #[test]
+    fn a_field_flat_across_a_wall_has_no_slope_through_it() {
+        // 0.2.1 read a rock or off-grid neighbour as 0, so the field sloped away from every wall whatever
+        // it held: a uniform field had a slope at 1 240 of these 2 749 floor cells (up to 1.414), and
+        // fleeing pointed into the wall at 1 300 of the 1 362 faces the two one-axis fields are flat across.
+        let uniform = walled_field(|_| 1.0);
+        let varies_in_y = walled_field(|c| (c.y as f32 * 0.37).sin() + 2.0);
+        let varies_in_x = walled_field(|c| (c.x as f32 * 0.29).cos() + 2.0);
+        for c in walled_floor() {
+            assert_eq!(uniform.gradient_cell(0, c), Vec2::ZERO, "{c}");
+            assert_eq!(varies_in_y.gradient_cell(0, c).x, 0.0, "{c}");
+            assert_eq!(varies_in_x.gradient_cell(0, c).y, 0.0, "{c}");
+        }
+    }
+
+    #[test]
+    fn beside_a_wall_the_gradient_still_points_uphill() {
+        // The ramp 2x + y. An axis with floor on both sides keeps the central difference exactly (open
+        // floor and the component along a wall); an axis with one wall face reads the one-sided difference
+        // from the floor side; with walls on both sides it is flat. 0.2.1 pointed downhill at 635 cells.
+        let g = walled_field(|c| (2 * c.x + c.y) as f32);
+        let axis = |plus: bool, minus: bool, step: f32| match (plus, minus) {
+            (true, true) => 2.0 * step,
+            (false, false) => 0.0,
+            _ => step,
+        };
+        for c in walled_floor() {
+            let floor = |dx, dy| on_walled_floor(c + IVec2::new(dx, dy));
+            let want = Vec2::new(axis(floor(1, 0), floor(-1, 0), 2.0), axis(floor(0, 1), floor(0, -1), 1.0));
+            assert_eq!(g.gradient_cell(0, c), want, "{c}");
+        }
+    }
+
+    #[test]
+    fn a_cell_off_the_floor_has_no_slope() {
+        // Rock, the wall, cells just off each edge, and the extreme cells a saturated
+        // `CellFrame::world_to_cell` returns: the field does not exist there. 0.2.1 read them against
+        // zero neighbours, and in a debug build panicked on an `i32` overflow at the extremes.
+        let g = walled_field(|c| (2 * c.x + c.y) as f32 + 1.0);
+        let rock = IVec2::new(7, 3);
+        assert!(!on_walled_floor(rock) && on_walled_floor(IVec2::new(8, 3)));
+        let off_floor = [
+            rock,
+            IVec2::new(32, 10),
+            IVec2::new(-1, 24),
+            IVec2::new(64, 24),
+            IVec2::new(10, -1),
+            IVec2::new(10, 48),
+            IVec2::new(i32::MAX, 24),
+            IVec2::new(i32::MIN, 24),
+            IVec2::new(5, i32::MAX),
+            IVec2::new(5, i32::MIN),
+            IVec2::MAX,
+            IVec2::MIN,
+        ];
+        for c in off_floor {
+            assert_eq!(g.gradient_cell(0, c), Vec2::ZERO, "{c}");
+        }
+        assert_ne!(g.gradient_cell(0, IVec2::new(8, 3)), Vec2::ZERO, "the floor beside that rock has a slope");
     }
 
     #[test]
