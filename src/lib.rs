@@ -237,9 +237,88 @@ mod tests {
         assert_eq!(g.sample_cell(0, IVec2::new(2, 0)), 0.5, "but a floor cell past it does: 1 - 2/4");
     }
 
+    // ---- Issue #7: diffusion moves value between floor cells and never makes or destroys it. ----
+
+    /// The floor total, summed in `f64` so the sum itself adds no rounding worth measuring.
+    fn floor_total<const N: usize>(g: &StigGrid<N>, channel: usize) -> f64 {
+        g.channels()[channel].iter().map(|&v| f64::from(v)).sum()
+    }
+
+    /// 64×48 with a wall down x = 32 open only at y = 24, and scattered single rock cells: every cell
+    /// beside the wall, a rock or the grid edge has fewer than four floor neighbours.
+    fn walled_floor() -> impl Iterator<Item = IVec2> {
+        all_floor(64, 48).filter(|c| if c.x == 32 { c.y == 24 } else { (c.x * 7 + c.y * 13) % 11 != 0 })
+    }
+
+    /// A 20×20 room with a one-cell-wide corridor leaving it east and ending in a dead end at x = 40.
+    fn dead_end_floor() -> impl Iterator<Item = IVec2> {
+        all_floor(64, 48).filter(|c| {
+            ((2..22).contains(&c.x) && (2..22).contains(&c.y)) || (c.y == 12 && (22..=40).contains(&c.x))
+        })
+    }
+
+    #[test]
+    fn diffusion_moves_value_without_making_or_losing_any() {
+        // 0.2.1 blended each cell toward the mean of its floor neighbours, which is not symmetric beside a
+        // wall, a rock or the grid edge: in 1000 ticks these three maps lost 9.8%, 11.7% and 35% of their
+        // total. Each has a deposit beside a wall, the grid edge or the end of the corridor.
+        let defs = [ChannelDef { evaporate: 0.0, diffuse: 0.25, deposit_radius: 2.0 }];
+        let maps: [(&str, Vec<IVec2>, [IVec2; 2]); 3] = [
+            ("open", all_floor(64, 48).collect(), [IVec2::new(0, 0), IVec2::new(50, 30)]),
+            ("walled", walled_floor().collect(), [IVec2::new(31, 24), IVec2::new(50, 47)]),
+            ("dead end", dead_end_floor().collect(), [IVec2::new(40, 12), IVec2::new(2, 2)]),
+        ];
+        for (name, floor, deposits) in maps {
+            let mut g = StigGrid::<1>::new(64, 48, floor.into_iter(), defs);
+            for at in deposits {
+                g.deposit(0, at, 100.0);
+            }
+            let start = floor_total(&g, 0);
+            for _ in 0..1000 {
+                g.evaporate_diffuse(1.0);
+            }
+            let rel = (floor_total(&g, 0) - start) / start;
+            assert!(rel.abs() < 1e-5, "{name}: the floor total moved by {rel:e} with evaporation 0");
+        }
+    }
+
+    #[test]
+    fn with_diffusion_on_the_total_decays_at_exactly_the_evaporation_rate() {
+        // Evaporation is the only thing that removes value, so the total after k ticks is (1 - e·dt)^k of
+        // the start whatever diffusion does to its shape. 0.2.1 was 6% high after 20 ticks here.
+        let defs = [ChannelDef { evaporate: 0.1, diffuse: 0.25, deposit_radius: 2.0 }];
+        let mut g = StigGrid::<1>::new(64, 48, walled_floor(), defs);
+        g.deposit(0, IVec2::new(31, 24), 10.0);
+        let start = floor_total(&g, 0);
+        for _ in 0..20 {
+            g.evaporate_diffuse(1.0);
+        }
+        let want = start * 0.9f64.powi(20);
+        let rel = (floor_total(&g, 0) - want) / want;
+        assert!(rel.abs() < 1e-5, "total off the evaporation rate by {rel:e}");
+    }
+
+    #[test]
+    fn a_uniform_field_stays_uniform_beside_walls() {
+        // The other half of a symmetric exchange: no spurious slope at a wall. A rule that conserved the
+        // total by letting each cell give `d / n` of itself to each neighbour would pile value into the
+        // cells beside walls, and every agent would read a gradient toward them.
+        let defs = [ChannelDef { evaporate: 0.0, diffuse: 0.25, deposit_radius: 0.0 }];
+        let floor: Vec<IVec2> = walled_floor().collect();
+        let mut g = StigGrid::<1>::new(64, 48, floor.iter().copied(), defs);
+        assert!(g.set_channel(0, &[1.0; 64 * 48]));
+        for _ in 0..1000 {
+            g.evaporate_diffuse(1.0);
+        }
+        for c in floor {
+            let v = g.sample_cell(0, c);
+            assert!((v - 1.0).abs() < 1e-6, "{c} drifted to {v}");
+        }
+    }
+
     #[test]
     fn a_cell_with_no_floor_neighbours_keeps_its_own_value() {
-        // The `n > 0.0` fallback: an isolated cell blends toward ITSELF, so full diffusion is a no-op.
+        // An isolated cell has no floor face to exchange across, so even full diffusion is a no-op.
         let floor = [IVec2::new(1, 1)];
         let defs = [ChannelDef { evaporate: 0.0, diffuse: 1.0, deposit_radius: 0.0 }];
         let mut g = StigGrid::<1>::new(3, 3, floor.into_iter(), defs);

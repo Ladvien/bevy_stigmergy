@@ -160,9 +160,10 @@ fn chunks_partition_the_floor_evenly() {
     }
 }
 
-/// 0.2.0's tick, written as plainly as it reads: evaporate every floor cell in place, then blend each
-/// floor cell toward the mean of its floor neighbours (E, W, S, N, in that order) into a fresh grid. A
-/// channel with no diffusion or no mass left after evaporation only evaporates.
+/// The tick, written as plainly as it reads: evaporate every floor cell in place, then into a fresh grid
+/// let each floor cell keep `1 − n·d/4` of itself and take `d/4` of each of its `n` floor neighbours
+/// (E, W, S, N, in that order) — every floor–floor edge exchanging `d/4` of the difference both ways
+/// (issue #7). A channel with no diffusion or no mass left after evaporation only evaporates.
 fn reference_tick(
     channels: &mut [Vec<f32>],
     mask: &[bool],
@@ -201,8 +202,8 @@ fn reference_tick(
                         n += 1.0;
                     }
                 }
-                let avg = if n > 0.0 { sum / n } else { grid[i] };
-                next[i] = grid[i] * (1.0 - def.diffuse) + avg * def.diffuse;
+                let edge = def.diffuse * 0.25;
+                next[i] = grid[i] * (1.0 - n * edge) + sum * edge;
             }
         }
         *grid = next;

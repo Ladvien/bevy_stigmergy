@@ -62,7 +62,9 @@ let uphill = field.gradient_cell(SCENT, frame.world_to_cell(agent));
 
 ## Units and time
 
-The crate has no clock. `evaporate_diffuse(dt)` applies `ChannelDef::evaporate` **per unit of whatever `dt` you pass**: per second when you step in seconds, per game-day when you step in game-days. The same number means different things in each — `0.4` loses 40% of the field per second in the first and 40% per game-day in the second. `diffuse` is different: it is a blend weight applied **per call**, not scaled by `dt`, so two calls at `dt/2` spread twice as much as one call at `dt`.
+The crate has no clock. `evaporate_diffuse(dt)` applies `ChannelDef::evaporate` **per unit of whatever `dt` you pass**: per second when you step in seconds, per game-day when you step in game-days. The same number means different things in each — `0.4` loses 40% of the field per second in the first and 40% per game-day in the second. `diffuse` is different: it is applied **per call**, not scaled by `dt`, so two calls at `dt/2` spread twice as much as one call at `dt`.
+
+Diffusion moves value and never makes or loses any. Each call, every floor cell trades `diffuse / 4` of the difference with each floor neighbour — in open floor, a blend toward the neighbour average — and nothing across a wall, so with no deposits the floor total after `k` ticks is `(1 − evaporate·dt)^k` of the start, to float rounding, whether the scent sits in a hall or at the end of a dead-end corridor. Keep `diffuse` in `[0, 1]`; up to 1 no value goes negative.
 
 ## Which thread does the work
 

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Diffusion no longer makes or destroys value beside walls, rock and the grid edge (#7). Each floor cell used to blend toward the mean of its floor neighbours, which is not symmetric wherever a cell has fewer than four: with evaporation 0, a 64×48 room gained 1.9% and a walled one lost 7% in 1000 ticks, and a deposit at the end of a dead-end corridor settled to 27% of itself (one in a room corner to 54%, one in the open to 108%). Now every floor–floor edge exchanges `diffuse / 4` of the difference both ways and a wall face exchanges nothing, so the floor total changes only by deposits and evaporation, to float rounding: within 7e-8 relative over 1000 ticks on the same maps, and each of those deposits settles to 0.9999–1.0002 of itself. **Field values change:** a cell with four floor neighbours computes the same bits as before from the same input, but every cell beside a wall, rock or grid edge does not, and nothing downstream of one is bit-identical to 0.2.1. In a one-wide corridor `diffuse` now moves `diffuse / 4` per neighbour per call, the rate open floor always had, rather than `diffuse / 2`. The stencil no longer divides per cell; the inline tick is 3–11% faster (median of nine interleaved runs per side).
+
 ## [0.2.1] - 2026-10-30
 
 ### Added
