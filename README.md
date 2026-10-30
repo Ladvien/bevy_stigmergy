@@ -32,6 +32,8 @@ let here = field.sample_cell(SCENT, c); // query
 let uphill = field.gradient_cell(SCENT, c);
 ```
 
+`gradient_cell` is the plain central difference `(v(x+1) − v(x−1), v(y+1) − v(y−1))` in open floor, and it reads a wall the way the tick does: a face nothing crosses. A neighbour that is rock or off the grid counts as the cell's own value, so a flat field has no slope beside a wall and an agent fleeing a threat is not pulled into it, and across a wall the component is the one-sided difference from the floor side. A cell that is not floor — rock, or off the grid however far — has no slope and reads `Vec2::ZERO`, as does an undefined channel.
+
 ## What it deliberately does not do
 
 **It owns no resources, registers no systems, and has no schedule.** When deposits drain, when evaporation runs, and where both sit relative to the agents reading the field are gameplay decisions. A crate that made them would be unusable in any game that wanted different ones.

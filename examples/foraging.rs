@@ -27,9 +27,15 @@
 //! This is the only example here that needs a GPU; `trail` and `rally` print to a terminal.
 //!
 //! Run: `cargo run -p bevy_stigmergy --example foraging`
+//!
+//! **Capture** (for the README's media, and for comparing two builds frame for frame): the example's
+//! clock is its step count, so a run is the same every time. `STIG_FRAMES=n` runs `n` steps and exits;
+//! `STIG_SHOT=prefix` then writes `prefix-<step>.png` of the last step, and of every `STIG_EVERY`th step
+//! when that is set too. With none of them set it runs until the window closes.
 
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use bevy_stigmergy::{ChannelDef, StigGrid};
 
 const W: usize = 84;
@@ -73,6 +79,33 @@ fn world_of(p: Vec2) -> Vec3 {
 #[derive(Resource)]
 struct Field(StigGrid<3>);
 
+/// The simulation's clock: steps taken so far. The wander phase and the capture both read it, so a run
+/// is the same on any monitor and every time.
+#[derive(Resource, Default)]
+struct Frame(u32);
+
+/// The capture knobs, read once from the environment (see the example's header).
+#[derive(Resource)]
+struct Capture {
+    /// Steps to run before exiting; `0` runs until the window closes.
+    frames: u32,
+    /// Prefix of the screenshot files, if any.
+    shot: Option<String>,
+    /// Also shoot every this-many steps; `0` shoots the last step only.
+    every: u32,
+}
+
+impl Capture {
+    fn from_env() -> Self {
+        let number = |key: &str| std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        Self {
+            frames: number("STIG_FRAMES"),
+            shot: std::env::var("STIG_SHOT").ok(),
+            every: number("STIG_EVERY"),
+        }
+    }
+}
+
 #[derive(Component)]
 struct Tile(IVec2);
 
@@ -96,8 +129,10 @@ fn main() {
             }),
             ..default()
         }))
+        .insert_resource(Capture::from_env())
+        .init_resource::<Frame>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (step_field, paint_tiles).chain())
+        .add_systems(Update, (step_field, paint_tiles, capture).chain())
         .run();
 }
 
@@ -176,11 +211,16 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
 
 /// Deposit, decide, move, then let the field evaporate and diffuse.
 fn step_field(
-    time: Res<Time>,
+    mut frame: ResMut<Frame>,
+    capture: Res<Capture>,
     mut field: ResMut<Field>,
     mut foragers: Query<(&mut Forager, &mut Transform, &mut Sprite)>,
 ) {
-    let t = time.elapsed_secs();
+    // A capture run is frozen on its last step while the screenshot is taken.
+    if capture.frames > 0 && frame.0 >= capture.frames {
+        return;
+    }
+    let t = frame.0 as f32 * DT;
 
     // The two constant sources. Everything else in the field is laid by the foragers.
     field.0.deposit(HOME, NEST, 90.0 * DT);
@@ -244,6 +284,7 @@ fn step_field(
     }
 
     field.0.evaporate_diffuse(DT);
+    frame.0 += 1;
 }
 
 fn paint_tiles(field: Res<Field>, mut tiles: Query<(&Tile, &mut Sprite)>) {
@@ -265,6 +306,36 @@ fn paint_tiles(field: Res<Field>, mut tiles: Query<(&Tile, &mut Sprite)>) {
             0.055 + tr * 0.70 + b * 0.30 + f * 0.45,
             0.075 + tr * 0.20 + b * 0.60 + f * 0.55,
         );
+    }
+}
+
+/// The capture knobs: shoot the steps asked for, then exit once the last shot has had time to land.
+fn capture(
+    frame: Res<Frame>,
+    capture: Res<Capture>,
+    mut commands: Commands,
+    mut last_shot: Local<u32>,
+    mut settle: Local<u32>,
+) {
+    if capture.frames == 0 {
+        return;
+    }
+    let step = frame.0;
+    if let Some(prefix) = &capture.shot {
+        let periodic = capture.every > 0 && step % capture.every == 0;
+        if (periodic || step == capture.frames) && step != *last_shot {
+            *last_shot = step;
+            commands
+                .spawn(Screenshot::primary_window())
+                .observe(save_to_disk(format!("{prefix}-{step:05}.png")));
+        }
+    }
+    if step >= capture.frames {
+        // A screenshot is written a few frames after it is asked for.
+        *settle += 1;
+        if *settle > 30 {
+            commands.write_message(AppExit::Success);
+        }
     }
 }
 
