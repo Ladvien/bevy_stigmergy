@@ -145,11 +145,15 @@ relative over 1000 ticks in the prototype — and it changes every interior bit)
 
 - **Conservation** (issue #7 acceptance): evaporation 0, no deposits, 1000 ticks — `|Δtotal/total| ≤ 1e−5`
   on the open map, the walled map with a gap and the sealed map. Permanent test.
+- **Rounding, not the rule, bounds the long run.** At evaporation 0 float32 rounding walks the total:
+  measured +1.3e−4 after 100 000 ticks on the walled map and up to 1.7e−4 after 20 000 ticks for a single
+  settled deposit. The per-edge flux form measures the same (−8.6e−5; 1.6e−4), so the bound is the storage
+  precision. With any evaporation the error leaves with the mass it rode on.
 - **Decay with diffusion:** after `k` ticks at evaporation `e`, the floor total is `(1 − e·dt)^k` of the
   start within `1e−5`, on a walled map.
-- **Where a deposit is laid does not change how much of it exists:** the settled total of one deposit at a
-  dead-end tip, a room corner, a corridor and a room centre all equal the deposit within `1e−5`. Permanent
-  test (dead end, the case 0.2.1 got most wrong).
+- **Where a deposit is laid does not change how much of it exists:** one deposit at a dead-end tip, a room
+  corner, a corridor and a room centre keeps its total within `1e−5` over 1000 ticks (permanent test, dead
+  end: the case 0.2.1 got most wrong), and within rounding (above) once settled.
 - **Uniform stays uniform:** a uniform field over a walled floor is unchanged after 1000 ticks within
   `1e−6`.
 - **Walls:** rock cells stay exactly 0; across a sealed wall nothing arrives; with a gap, value reaches the
