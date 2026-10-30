@@ -1,7 +1,8 @@
 # Where the diffusion pass runs
 
-The diffusion stencil of `StigGrid::evaporate_diffuse`: what it computes is settled (a 4-neighbour blend
-over floor cells, double-buffered); this note is about **which thread computes it**, because that is what
+The diffusion stencil of `StigGrid::evaporate_diffuse`: what it computes is settled (a 4-neighbour stencil
+over floor cells, double-buffered; since issue #7 a symmetric per-edge exchange, see
+`conservative-diffusion.md`); this note is about **which thread computes it**, because that is what
 issue #6 found wrong. Sanctuary's social fields (≈175×175 cells, 5 channels) ticked from a Bevy system
 parked the calling worker in `rayon_core::latch::LockLatch::wait_and_reset` until rayon's global pool had
 run the pass: median 0.41 ms, p90 14.0 ms, max 150.4 ms at load 8–22.
