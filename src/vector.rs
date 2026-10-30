@@ -45,7 +45,8 @@ pub struct RallyGrid {
     deposit_radius: f32,
     /// Only floor cells receive value, so evaporation skips the rock cells.
     floor_cells: Vec<FloorCell>,
-    floor_mask: Vec<bool>,
+    /// The same set as a per-cell mask, for the deposit kernel's destination test.
+    floor_mask: Vec<u8>,
 }
 
 impl RallyGrid {

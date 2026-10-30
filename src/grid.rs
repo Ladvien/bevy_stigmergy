@@ -36,8 +36,12 @@ pub(crate) const NB_NX: u8 = 2;
 pub(crate) const NB_PY: u8 = 4;
 /// The `-y` neighbour (`idx - width`) is floor.
 pub(crate) const NB_NY: u8 = 8;
+/// The cell itself is floor. Set in [`floor_sets`]'s cell mask beside the cell's neighbour bits.
+pub(crate) const FLOOR: u8 = 16;
 
-/// The floor set, in the two shapes the passes want: an ascending list to iterate, and a mask to test.
+/// The floor set, in the two shapes the passes want: an ascending list to iterate, and a per-cell mask
+/// to test — [`FLOOR`] plus the neighbour bits at a floor cell, `0` at rock — so a read at one cell
+/// learns whether it is floor and which of its faces are walls from one byte.
 ///
 /// **The list is read off the mask, deliberately.** They are two views of the same set, and a mask that
 /// disagreed with the list would change diffusion silently at the map edges — the neighbour blend would
@@ -52,36 +56,40 @@ pub(crate) fn floor_sets(
     width: usize,
     height: usize,
     floor_cells: impl Iterator<Item = IVec2>,
-) -> (Vec<FloorCell>, Vec<bool>) {
-    let mut mask = vec![false; width * height];
+) -> (Vec<FloorCell>, Vec<u8>) {
+    let mut floor = vec![false; width * height];
     for c in floor_cells {
         if in_grid(c, width, height) {
-            mask[row_major(c, width)] = true;
+            floor[row_major(c, width)] = true;
         }
     }
-    let cells = mask
+    let cells: Vec<FloorCell> = floor
         .iter()
         .enumerate()
-        .filter(|&(_, &floor)| floor)
+        .filter(|&(_, &is_floor)| is_floor)
         .map(|(idx, _)| {
             let (x, y) = (idx % width, idx / width);
-            // Each test checks the grid edge first, so the mask is only read for an in-grid neighbour.
+            // Each test checks the grid edge first, so the set is only read for an in-grid neighbour.
             let mut floor_nbrs = 0;
-            if x + 1 < width && mask[idx + 1] {
+            if x + 1 < width && floor[idx + 1] {
                 floor_nbrs |= NB_PX;
             }
-            if x > 0 && mask[idx - 1] {
+            if x > 0 && floor[idx - 1] {
                 floor_nbrs |= NB_NX;
             }
-            if y + 1 < height && mask[idx + width] {
+            if y + 1 < height && floor[idx + width] {
                 floor_nbrs |= NB_PY;
             }
-            if y > 0 && mask[idx - width] {
+            if y > 0 && floor[idx - width] {
                 floor_nbrs |= NB_NY;
             }
             FloorCell { idx, floor_nbrs }
         })
         .collect();
+    let mut mask = vec![0; width * height];
+    for fc in &cells {
+        mask[fc.idx] = FLOOR | fc.floor_nbrs;
+    }
     (cells, mask)
 }
 
@@ -99,7 +107,7 @@ pub(crate) fn floor_sets(
 pub(crate) fn deposit_disc(
     width: usize,
     height: usize,
-    floor_mask: &[bool],
+    floor_mask: &[u8],
     center: IVec2,
     radius: f32,
     mut emit: impl FnMut(usize, f32),
@@ -109,7 +117,7 @@ pub(crate) fn deposit_disc(
     for dy in -r..=r {
         for dx in -r..=r {
             let cell = center + IVec2::new(dx, dy);
-            if !in_grid(cell, width, height) || !floor_mask[row_major(cell, width)] {
+            if !in_grid(cell, width, height) || floor_mask[row_major(cell, width)] & FLOOR == 0 {
                 continue;
             }
             let dist = ((dx * dx + dy * dy) as f32).sqrt();
