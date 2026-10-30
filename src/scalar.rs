@@ -2,7 +2,7 @@
 
 use bevy_math::{IVec2, Vec2};
 
-use crate::grid::{FloorCell, deposit_disc, floor_sets, in_grid, row_major};
+use crate::grid::{FloorCell, NB_NX, NB_NY, NB_PX, NB_PY, deposit_disc, floor_sets, in_grid, row_major};
 
 /// Per-channel behaviour. The caller supplies one of these per channel, typically from its own config.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -44,26 +44,26 @@ pub struct StigGrid<const N: usize> {
     height: usize,
     channels: [Vec<f32>; N],
     defs: [ChannelDef; N],
-    /// Reused double-buffer for the diffusion pass (avoids per-frame allocation).
+    /// The double-buffer the diffusion pass writes each channel's next state into before swapping it in,
+    /// reused across ticks so a tick allocates nothing. Its rock cells are 0 for the same reason a
+    /// channel's are (it only ever holds a former channel grid), so a swap never moves value into rock.
     scratch: Vec<f32>,
-    /// Reused contiguous, floor-indexed output buffer for the *parallel* diffusion map: one slot per
-    /// `floor_cells` entry, same order. The parallel pass writes disjoint slots here (no cross-cell
-    /// reduction), then a serial scatter copies it into the grid-indexed `scratch` double-buffer.
-    diffuse_out: Vec<f32>,
-    /// The floor cells — the only cells that ever carry value — precomputed once so the per-tick passes
-    /// skip the rock cells.
+    /// One "has run" flag per chunk of the current diffusion pass, reused across ticks, so a chunk the
+    /// caller's runner never ran is found and run inline rather than leaving stale values behind.
+    chunk_done: Vec<bool>,
+    /// The floor cells — the only cells that ever carry value — precomputed once, each with its floor
+    /// neighbours, so the per-tick passes skip the rock cells and the stencil tests no bounds.
     floor_cells: Vec<FloorCell>,
-    /// The same set as a mask, for the neighbour test inside the diffusion stencil.
+    /// The same set as a mask, for the deposit kernel's destination test.
     floor_mask: Vec<bool>,
 }
 
 impl<const N: usize> StigGrid<N> {
     /// Allocate empty channels over a `width`×`height` grid whose floor cells are `floor_cells`.
     ///
-    /// `floor_cells` must be **ascending row-major** and free of repeats;
-    /// [`crate::CellFrame::cells`] and [`crate::CellFrame::floor_cells`] both are. Cells outside the
-    /// grid are ignored rather than panicking, so a caller whose floor set and dimensions disagree gets
-    /// an empty region, not a crash.
+    /// `floor_cells` may come in any order, and a repeated cell counts once: the set is kept ascending
+    /// row-major internally whatever the caller hands in. Cells outside the grid are ignored rather than
+    /// panicking, so a caller whose floor set and dimensions disagree gets an empty region, not a crash.
     pub fn new(
         width: usize,
         height: usize,
@@ -72,14 +72,13 @@ impl<const N: usize> StigGrid<N> {
     ) -> Self {
         let cells = width * height;
         let (floor_cells, floor_mask) = floor_sets(width, height, floor_cells);
-        let diffuse_out = vec![0.0; floor_cells.len()];
         Self {
             width,
             height,
             channels: std::array::from_fn(|_| vec![0.0; cells]),
             defs,
             scratch: vec![0.0; cells],
-            diffuse_out,
+            chunk_done: Vec::new(),
             floor_cells,
             floor_mask,
         }
@@ -130,7 +129,7 @@ impl<const N: usize> StigGrid<N> {
         });
     }
 
-    /// One evaporation + diffusion step for every channel.
+    /// One evaporation + diffusion step for every channel, **inline on the calling thread**.
     ///
     /// `dt` is in the caller's own time unit and is used only by evaporation —
     /// [`ChannelDef::evaporate`] is a fraction lost per unit of it. Diffusion is per call, not per unit
@@ -138,63 +137,86 @@ impl<const N: usize> StigGrid<N> {
     ///
     /// Diffusion blends only between floor cells, so influence does not seep through walls.
     ///
-    /// **Both passes iterate `floor_cells` rather than the whole grid, and that is bit-identical rather
+    /// Nothing here touches a thread pool: the call does its work on the thread that made it and
+    /// returns, so a Bevy system that calls it never parks waiting for another pool's threads. A large
+    /// grid that wants the stencil spread over workers uses
+    /// [`evaporate_diffuse_with`](Self::evaporate_diffuse_with) and the caller's own pool; this is
+    /// exactly that call with one chunk run in place, so the two give the same bits.
+    ///
+    /// **The tick iterates `floor_cells` rather than the whole grid, and that is bit-identical rather
     /// than an approximation:** evaporating a rock cell is `0 · retain`, the double-buffer's rock cells
     /// stay 0 across the swap, and deposits are floor-masked, so a rock cell is invariantly 0. The
     /// neighbour sum keeps its fixed E/W/S/N order — float addition is non-associative, so the order is
     /// load-bearing.
     pub fn evaporate_diffuse(&mut self, dt: f32) {
-        use rayon::prelude::*;
-        let w = self.width;
-        let h = self.height;
-        // Split the disjoint field borrows so the parallel map can read `channels[ch]`, write the reused
-        // `diffuse_out`, and read `floor_cells`/`floor_mask` at once.
-        let Self { channels, defs, scratch, diffuse_out, floor_cells, floor_mask, .. } = self;
-        for ch in 0..N {
-            let def = defs[ch];
+        self.evaporate_diffuse_with(dt, 1, |chunks| chunks.for_each(DiffuseChunk::run));
+    }
+
+    /// [`evaporate_diffuse`](Self::evaporate_diffuse) with the stencil handed to the caller as `chunks`
+    /// disjoint [`DiffuseChunk`]s, so it runs on **the caller's** threads.
+    ///
+    /// For every channel that diffuses this tick, `run` is called once with a [`DiffuseChunks`]
+    /// iterator; it runs each chunk ([`DiffuseChunk::run`]) wherever it likes and returns when they are
+    /// done. In a Bevy app that is the `ComputeTaskPool` its systems already run on:
+    ///
+    /// ```
+    /// use bevy::tasks::{ComputeTaskPool, TaskPool};
+    /// use bevy_math::IVec2;
+    /// use bevy_stigmergy::{ChannelDef, StigGrid};
+    ///
+    /// let cells = (0..64).flat_map(|y| (0..64).map(move |x| IVec2::new(x, y)));
+    /// let mut grid = StigGrid::<1>::new(64, 64, cells, [ChannelDef::default()]);
+    /// grid.deposit(0, IVec2::new(32, 32), 1.0);
+    ///
+    /// // Inside a system this is `ComputeTaskPool::get()`.
+    /// let pool = ComputeTaskPool::get_or_init(TaskPool::default);
+    /// grid.evaporate_diffuse_with(1.0 / 60.0, pool.thread_num(), |chunks| {
+    ///     pool.scope(|s| chunks.for_each(|chunk| s.spawn(async move { chunk.run() })));
+    /// });
+    /// assert!(grid.sample_cell(0, IVec2::new(33, 32)) > 0.0);
+    /// ```
+    ///
+    /// `rayon::scope`, `std::thread::scope` and a plain loop work the same way. Each chunk evaporates
+    /// and diffuses its own cells in one pass; the swap into the grid stays on the calling thread. A
+    /// channel that does not diffuse this tick (`diffuse` of 0, or no mass left) is only evaporated, in
+    /// place on the calling thread, and `run` is not called for it.
+    ///
+    /// **The result is bit-identical for every `chunks` and every runner, and to
+    /// [`evaporate_diffuse`](Self::evaporate_diffuse).** Each chunk reads only the previous grid and
+    /// writes only its own cells, with no cross-cell accumulator, so neither the partition nor the
+    /// order the chunks run in can change a bit.
+    ///
+    /// `chunks` is clamped to `1..=` the floor-cell count, so `0` means one chunk. A chunk the runner
+    /// drops or forgets instead of running is run inline after `run` returns, so a runner bug costs
+    /// time, never a stale field.
+    pub fn evaporate_diffuse_with(&mut self, dt: f32, chunks: usize, mut run: impl FnMut(DiffuseChunks<'_>)) {
+        let width = self.width;
+        // Split the disjoint field borrows so a pass can read a channel and the floor list while its
+        // chunks write the reused `scratch` and `chunk_done`.
+        let Self { channels, defs, scratch, chunk_done, floor_cells, .. } = self;
+        let chunks = chunks.clamp(1, floor_cells.len().max(1));
+        chunk_done.resize(chunks, false);
+        for (grid, def) in channels.iter_mut().zip(defs.iter()) {
             let retain = (1.0 - def.evaporate * dt).clamp(0.0, 1.0);
-            // Evaporate in place (cell-local, cheap) and note whether any mass survives. An empty channel
-            // diffuses 0 → 0, so its diffusion is skipped entirely — bit-identical, and on a typical tick
-            // several channels are empty.
-            let mut any_mass = false;
-            {
-                let grid = &mut channels[ch];
+            // An empty channel diffuses 0 → 0, so it only evaporates — bit-identical, and on a typical
+            // tick several channels are empty. The test is the evaporated value, exactly as stored below.
+            let skip = def.diffuse <= 0.0 || !floor_cells.iter().any(|fc| grid[fc.idx] * retain != 0.0);
+            if skip {
                 for fc in floor_cells.iter() {
-                    let v = grid[fc.idx] * retain;
-                    grid[fc.idx] = v;
-                    any_mass |= v != 0.0;
+                    grid[fc.idx] *= retain;
                 }
-            }
-            if def.diffuse <= 0.0 || !any_mass {
                 continue;
             }
-            // Blend each floor cell toward the average of its floor neighbours (double-buffered, parallel).
-            let diffuse = def.diffuse;
-            let grid = &channels[ch];
-            diffuse_out.par_iter_mut().zip(floor_cells.par_iter()).for_each(|(out, fc)| {
-                let (x, y) = (fc.pos.x, fc.pos.y);
-                let mut sum = 0.0;
-                let mut n = 0.0;
-                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                    let nb = IVec2::new(x + dx, y + dy);
-                    if nb.x >= 0
-                        && nb.y >= 0
-                        && (nb.x as usize) < w
-                        && (nb.y as usize) < h
-                        && floor_mask[(nb.y as usize) * w + nb.x as usize]
-                    {
-                        sum += grid[(nb.y as usize) * w + nb.x as usize];
-                        n += 1.0;
-                    }
+            let pass = DiffusePass { src: grid.as_slice(), width, retain, diffuse: def.diffuse };
+            chunk_done.fill(false);
+            run(DiffuseChunks::new(pass, floor_cells, scratch, chunk_done));
+            // The same partition again: whatever the runner left unrun is run here.
+            for chunk in DiffuseChunks::new(pass, floor_cells, scratch, chunk_done) {
+                if !*chunk.done {
+                    chunk.run();
                 }
-                let avg = if n > 0.0 { sum / n } else { grid[fc.idx] };
-                *out = grid[fc.idx] * (1.0 - diffuse) + avg * diffuse;
-            });
-            // Serial scatter: contiguous floor-indexed results → grid-indexed `scratch`, then swap in.
-            for (fc, &v) in floor_cells.iter().zip(diffuse_out.iter()) {
-                scratch[fc.idx] = v;
             }
-            std::mem::swap(&mut channels[ch], scratch);
+            std::mem::swap(grid, scratch);
         }
     }
 
@@ -211,15 +233,15 @@ impl<const N: usize> StigGrid<N> {
             return (None, 0.0);
         };
         let mut best = 0.0f32;
-        let mut best_cell = None;
+        let mut best_idx = None;
         for fc in &self.floor_cells {
             let v = grid[fc.idx];
             if v > best {
                 best = v;
-                best_cell = Some(fc.pos);
+                best_idx = Some(fc.idx);
             }
         }
-        (best_cell, best)
+        (best_idx.map(|i| IVec2::new((i % self.width) as i32, (i / self.width) as i32)), best)
     }
 
     /// Field-degeneracy stats: `(peak, flatness)` where `peak` is the largest value over every channel
@@ -276,3 +298,127 @@ impl<const N: usize> StigGrid<N> {
         (self.width, self.height)
     }
 }
+
+/// What every chunk of one channel's pass shares: the previous grid, its width, the fraction
+/// evaporation keeps and the blend weight. Shared references only, so it is `Copy` and `Send`.
+#[derive(Clone, Copy)]
+struct DiffusePass<'a> {
+    src: &'a [f32],
+    width: usize,
+    retain: f32,
+    diffuse: f32,
+}
+
+/// One slice of a channel's pass: a contiguous run of floor cells and the span of the next grid that
+/// only they write.
+///
+/// Handed out by [`DiffuseChunks`] inside [`StigGrid::evaporate_diffuse_with`]. It is `Send`, so it can
+/// be moved into a task on any pool; [`run`](Self::run) it there. Chunks never share an output cell, so
+/// they may run concurrently and in any order.
+pub struct DiffuseChunk<'a> {
+    pass: DiffusePass<'a>,
+    cells: &'a [FloorCell],
+    /// The next grid from row-major index `base` on, up to where the next chunk's span begins.
+    out: &'a mut [f32],
+    base: usize,
+    done: &'a mut bool,
+}
+
+impl DiffuseChunk<'_> {
+    /// Evaporate this chunk's floor cells and blend each toward the average of its floor neighbours,
+    /// reading the previous grid and writing only this chunk's cells of the next one.
+    ///
+    /// Evaporation is applied to each value as it is read, `value · retain`, which is the same float
+    /// operation on the same operands as evaporating the whole grid first — so fusing the two passes
+    /// changes no bit.
+    pub fn run(self) {
+        let DiffusePass { src, width: w, retain, diffuse } = self.pass;
+        for fc in self.cells {
+            let (i, nbrs) = (fc.idx, fc.floor_nbrs);
+            let mut sum = 0.0;
+            let mut n = 0.0;
+            // A set bit means that neighbour is an in-grid floor cell, so each index is in range. The
+            // order is +x, -x, +y, -y and it is load-bearing: float addition is non-associative.
+            if nbrs & NB_PX != 0 {
+                sum += src[i + 1] * retain;
+                n += 1.0;
+            }
+            if nbrs & NB_NX != 0 {
+                sum += src[i - 1] * retain;
+                n += 1.0;
+            }
+            if nbrs & NB_PY != 0 {
+                sum += src[i + w] * retain;
+                n += 1.0;
+            }
+            if nbrs & NB_NY != 0 {
+                sum += src[i - w] * retain;
+                n += 1.0;
+            }
+            let own = src[i] * retain;
+            let avg = if n > 0.0 { sum / n } else { own };
+            // In range by construction: this chunk's cells lie in `base..base + out.len()`.
+            self.out[i - self.base] = own * (1.0 - diffuse) + avg * diffuse;
+        }
+        *self.done = true;
+    }
+
+    /// How many floor cells this chunk updates — a cost estimate for a runner that balances work.
+    pub fn cells(&self) -> usize {
+        self.cells.len()
+    }
+}
+
+/// The chunks of one channel's pass, in ascending cell order: an [`ExactSizeIterator`] of
+/// [`DiffuseChunk`]s whose floor-cell counts differ by at most one.
+///
+/// Splitting borrows the reused buffers inside [`StigGrid`], so handing out the chunks allocates
+/// nothing.
+pub struct DiffuseChunks<'a> {
+    pass: DiffusePass<'a>,
+    cells: &'a [FloorCell],
+    /// The rest of the next grid, from row-major index `base` on.
+    out: &'a mut [f32],
+    base: usize,
+    done: &'a mut [bool],
+}
+
+impl<'a> DiffuseChunks<'a> {
+    fn new(pass: DiffusePass<'a>, cells: &'a [FloorCell], out: &'a mut [f32], done: &'a mut [bool]) -> Self {
+        Self { pass, cells, out, base: 0, done }
+    }
+}
+
+impl<'a> Iterator for DiffuseChunks<'a> {
+    type Item = DiffuseChunk<'a>;
+
+    fn next(&mut self) -> Option<DiffuseChunk<'a>> {
+        let remaining = self.done.len();
+        if remaining == 0 {
+            return None;
+        }
+        // Ceiling division over the chunks left: earlier chunks take the remainder, so counts differ by
+        // at most one and every chunk is non-empty while there are at least as many cells as chunks.
+        let take = self.cells.len().div_ceil(remaining);
+        let (cells, rest_cells) = self.cells.split_at_checked(take)?;
+        // A chunk's span of the next grid runs up to the next chunk's first cell (the last chunk's, to
+        // the end of the grid). The floor list is ascending and repeat-free, so the spans are disjoint
+        // and each holds exactly its own chunk's cells.
+        let end = rest_cells.first().map_or(self.base + self.out.len(), |fc| fc.idx);
+        let (out, rest_out) =
+            std::mem::take(&mut self.out).split_at_mut_checked(end.checked_sub(self.base)?)?;
+        let (done, rest_done) = std::mem::take(&mut self.done).split_first_mut()?;
+        let base = self.base;
+        self.cells = rest_cells;
+        self.out = rest_out;
+        self.base = end;
+        self.done = rest_done;
+        Some(DiffuseChunk { pass: self.pass, cells, out, base, done })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.done.len(), Some(self.done.len()))
+    }
+}
+
+impl ExactSizeIterator for DiffuseChunks<'_> {}
