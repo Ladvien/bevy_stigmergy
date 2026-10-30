@@ -22,6 +22,14 @@ the corpus yet; see the note that cites it.
   (In distill, no catalog row.)
 - `10.3133_tm6a55` — Langevin et al. 2017, *Documentation for the MODFLOW 6 Groundwater Flow Model* (USGS
   TM 6-A55). Control-volume diffusion: one conductance per cell pair, no-flow inactive cells.
+- `10.1039_a702602a` — Maini, Painter & Chau 1997, *Spatial pattern formation in chemical and biological
+  systems* (J. Chem. Soc., Faraday Trans.). Reaction-diffusion with zero-flux (impermeable) boundaries.
+- `10.48550_arxiv.2212.07906` — *Flow-Lenia: Towards open-ended evolution in cellular automata through
+  mass conservation and parameter localization* (2022). A continuous CA made mass-conserving. Not yet read.
+- `10.48550_arxiv.2305.13784` — *Implementation of Lenia as a Reaction-Diffusion System* (2023). Not yet
+  read.
+- `10.48550_arxiv.2205.10463` — *Glaberish: Generalizing the continuously-valued Lenia framework to
+  arbitrary Life-like cellular automata* (2022). Not yet read.
 
 ## Shipping games — influence maps, scent and trail systems
 
@@ -31,6 +39,8 @@ the corpus yet; see the note that cites it.
   falloff curves, layered maps.
 - `gameaipro4-ch06-flooding-influence-map-chase-dishonored-2` — Couvidou, *Flooding the Influence Map for
   Chase in Dishonored 2*: a heat flood bounded by walls, read as a value-weighted centroid.
+- `10.48550_arxiv.2210.04624` — *WebCrowds: An Authoring Tool for Crowd Simulation* (2022). A crowd
+  authoring tool, not a shipped game; listed for crowd-simulation practice. Not yet read.
 
 ## Technical — parallel stencils, job systems, nested pools, SIMD
 
