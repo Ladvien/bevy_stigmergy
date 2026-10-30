@@ -161,6 +161,37 @@ what a wall is: a face nothing crosses, not a cold cell.
 - `gradient_cell` at a rock or off-grid cell returns `Vec2::ZERO`; before, it returned differences against
   zero-read neighbours, pointing at the nearest floor that held value.
 
+## Measured in iteration 3
+
+Harness `/tmp/s3/checklist.rs` (scratch), same map (64×48, 2 749 floor cells), `cb5ebd4` against the branch.
+Its counts differ a little from the ones above (a different agent rule and fleeing-face definition); these
+are the numbers the log quotes.
+
+| Target | Before | After |
+|---|---|---|
+| uniform field, floor cells with a slope | 1 240 of 2 749 (max 1.414) | 0 |
+| ramp `2x + y`: interior cells reading `(4, 2)`; boundary cells with a downhill component | 1 479 of 1 479; 635 of 1 270 | 1 479 of 1 479; 0 |
+| field flat along one axis: cells with a slope across it | 658 and 630 | 0 and 0 |
+| fleeing points into a wall face the field is flat across | 686 of 1 362 faces | 0 |
+| random field: axes with two floor neighbours (4 167), four-neighbour cells (1 479), bit hashes | `a9fdeab01ccdeb7c`, `021a50d60f690860` | equal |
+| 200 agents climbing a settled source, 400 steps: mean geodesic distance 37.2 →; within 3 cells | 12.6; 80 of 200 | 0.5; 200 of 200 |
+| 200 agents fleeing: mean distance →; stranded short of a local distance maximum | 49.8; 52 | 51.8; 14 |
+| bench `determinism`, 30 lines (caller, Bevy 16, rayon 1, 2, 24) | `a446265d6a95cf51` | `a446265d6a95cf51` |
+| `gradient_cell_x10000`, median of 3 interleaved rounds, 64² / 256² / 1024² | 54.0 / 69.8 / 95.1 µs | 47.7 / 59.1 / 79.2 µs (0.88× / 0.85× / 0.83×) |
+
+**Cost.** The first version (a `bool` mask, four floor-mask loads per query beside the cell's own) was
+0.73× at 64² but 1.06–1.13× at 256² and 1.00–1.15× at 1 024² against the old query: more loads and
+data-dependent branches on the rock pattern. A branchless form (`get` + select) was 1.3–1.8× *slower*. The
+version shipped keeps one flag byte per cell (floor, and which of its four neighbours are floor, the bits
+the tick's `FloorCell` already carried), replacing the `bool` mask in both grids: one load answers every
+wall question, and the query is faster than before at every size. Results are bit-identical to the first
+version.
+
+**`foraging`.** Stills at steps 900, 1 800, 2 700 and 3 600 (1/60 s each) from the old and new query show
+the same route through the left gap, forming by step 900 and holding to 3 600. The "slide along the wall to
+the gap" above does not show here: the gap sits straight between the nest and the food, so foragers seldom
+touch a wall. The README's picture still describes the example and was not regenerated.
+
 ## Pending index
 
 - Pass 8: the home-still MCP bridge timed out on every call (`catalog_recent`, `distill_search`); its
@@ -169,3 +200,7 @@ what a wall is: a face nothing crosses, not a cold cell.
   so every quote above was checked word for word against `markdown_read` instead. Pass 8's quote from
   Mark (Game AI Pro 2 ch. 30, "the tiger is on the other side of fence") is **not** in that chapter's
   markdown and was dropped; Lewis ch. 29 replaces it. `10.1039_a702602a` has markdown and is indexed.
+- Iteration 3: distill healthy (`system_status`, `bge-m3`, 18 070 embedded). `catalog_recent` (200) held
+  nothing in this crate's domains (one false hit on "diffusion": a mesh-generation model). Quotes from
+  `10.1039_a702602a`, Lewis ch. 29 and Couvidou ch. 6 re-checked against `markdown_read`; Harris's two
+  quotes are on page 678 of the GPU Gems stem (not 677 or 679).
