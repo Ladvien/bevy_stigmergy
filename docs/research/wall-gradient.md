@@ -105,8 +105,11 @@ boundary" — and the gradient is the ordinary central difference over those rea
   an undefined channel gives. The field does not exist there (rock is held at `0.0` as a storage invariant,
   not as a value), and reading rock against its floor neighbours pushes a fleeing agent that stands in a
   rock cell deeper into the rock — the same defect one cell over.
-- The cell is tested for floor before any neighbour is formed, and neighbours are addressed by row-major
-  index offsets, so no `i32` sum is ever formed for an off-grid cell.
+- The cell is tested for in-grid before any neighbour is formed, so no `i32` sum is ever formed for an
+  off-grid cell. The wall faces come from the same per-cell neighbour bits the tick's stencil uses, kept in
+  one byte per cell beside a floor bit, so a query reads one mask byte; the bits select the neighbour
+  *index* (`i + step`, a wall face stepping 0 and reading the cell itself) rather than branching on the map,
+  so a crowd's queries are free of mispredicted branches.
 
 Rejected:
 
@@ -142,7 +145,15 @@ Rejected:
   `Vec2::ZERO`, with no panic in a debug build.
 - **Determinism:** the tick is untouched, so the bench's `determinism` hashes stay `a446265d6a95cf51`.
 - **Cost:** `gradient_cell_x10000` (new bench case) within 5% of before at every grid size, or a logged
-  trade: the read adds up to four floor-mask loads per query.
+  trade.
+
+Measured (pass 19, `/tmp/s3p19/findings.md`): uniform 0 of 2 749; ramp interior 1 479 exact, 1 209
+tangent axes exact, 0 downhill; flat-across 0 / 0 cells and 0 of 1 362 faces; agents flee 35.3 → 54.9
+cells of 73 (0 within 3), climb 35.3 → 0.7 (199 of 200 within 3); every off-floor and extreme cell
+`Vec2::ZERO` with no panic; determinism `a446265d6a95cf51` everywhere. Cost: a first form that branched on
+the neighbour bits was 10–26% slower (bench) and ~2 ns/query slower in an in-process A/B, from branch
+mispredictions on a map with ~30% rock; the shipped index-select form is 0.77 / 0.93 / 0.95× of before at
+64² / 256² / 1024² (median of 20 interleaved rounds), with a lower p99 at every size.
 
 ## What great looks like
 
@@ -160,6 +171,8 @@ what a wall is: a face nothing crosses, not a cold cell.
   Every caller that steers by the gradient beside a wall sees different numbers there. Release-noted.
 - `gradient_cell` at a rock or off-grid cell returns `Vec2::ZERO`; before, it returned differences against
   zero-read neighbours, pointing at the nearest floor that held value.
+- The floor mask both grids keep is one byte per cell (floor bit plus the four neighbour bits) instead of
+  one `bool`: same memory, and the deposit kernel's destination test reads the floor bit.
 
 ## Pending index
 
