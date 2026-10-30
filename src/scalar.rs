@@ -2,7 +2,9 @@
 
 use bevy_math::{IVec2, Vec2};
 
-use crate::grid::{FloorCell, NB_NX, NB_NY, NB_PX, NB_PY, deposit_disc, floor_sets, in_grid, row_major};
+use crate::grid::{
+    FloorCell, IS_FLOOR, NB_NX, NB_NY, NB_PX, NB_PY, deposit_disc, floor_sets, in_grid, row_major,
+};
 
 /// Per-channel behaviour. The caller supplies one of these per channel, typically from its own config.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -61,8 +63,9 @@ pub struct StigGrid<const N: usize> {
     /// The floor cells — the only cells that ever carry value — precomputed once, each with its floor
     /// neighbours, so the per-tick passes skip the rock cells and the stencil tests no bounds.
     floor_cells: Vec<FloorCell>,
-    /// The same set as a mask, for the deposit kernel's destination test and the gradient's wall faces.
-    floor_mask: Vec<bool>,
+    /// One flag byte per grid cell ([`IS_FLOOR`] and the floor-neighbour bits, `0` for rock), for the
+    /// deposit kernel's destination test and the gradient's wall faces.
+    cell_flags: Vec<u8>,
 }
 
 impl<const N: usize> StigGrid<N> {
@@ -78,7 +81,7 @@ impl<const N: usize> StigGrid<N> {
         defs: [ChannelDef; N],
     ) -> Self {
         let cells = width * height;
-        let (floor_cells, floor_mask) = floor_sets(width, height, floor_cells);
+        let (floor_cells, cell_flags) = floor_sets(width, height, floor_cells);
         Self {
             width,
             height,
@@ -87,7 +90,7 @@ impl<const N: usize> StigGrid<N> {
             scratch: vec![0.0; cells],
             chunk_done: Vec::new(),
             floor_cells,
-            floor_mask,
+            cell_flags,
         }
     }
 
@@ -127,20 +130,20 @@ impl<const N: usize> StigGrid<N> {
         if !in_grid(c, self.width, self.height) {
             return Vec2::ZERO;
         }
-        let (w, h) = (self.width, self.height);
-        let (x, y) = (c.x as usize, c.y as usize);
+        let w = self.width;
         let i = row_major(c, w);
-        if !self.floor_mask[i] {
+        let flags = self.cell_flags[i];
+        if flags & IS_FLOOR == 0 {
             return Vec2::ZERO;
         }
         let own = grid[i];
-        // Each neighbour index is formed only once its side is known to be in the grid, so every index
-        // is in range; across a wall face the neighbour reads as `own`. With four floor neighbours these
-        // are the same loads and subtractions as a plain central difference, bit for bit.
-        let px = if x + 1 < w && self.floor_mask[i + 1] { grid[i + 1] } else { own };
-        let nx = if x > 0 && self.floor_mask[i - 1] { grid[i - 1] } else { own };
-        let py = if y + 1 < h && self.floor_mask[i + w] { grid[i + w] } else { own };
-        let ny = if y > 0 && self.floor_mask[i - w] { grid[i - w] } else { own };
+        // A neighbour bit is set only for an in-grid floor cell, so each index is in range; across a wall
+        // face the neighbour reads as `own`. With four floor neighbours these are the same loads and
+        // subtractions as a plain central difference, bit for bit.
+        let px = if flags & NB_PX != 0 { grid[i + 1] } else { own };
+        let nx = if flags & NB_NX != 0 { grid[i - 1] } else { own };
+        let py = if flags & NB_PY != 0 { grid[i + w] } else { own };
+        let ny = if flags & NB_NY != 0 { grid[i - w] } else { own };
         Vec2::new(px - nx, py - ny)
     }
 
@@ -154,8 +157,8 @@ impl<const N: usize> StigGrid<N> {
         };
         let (w, h) = (self.width, self.height);
         let radius = def.deposit_radius;
-        let mask = &self.floor_mask;
-        deposit_disc(w, h, mask, center, radius, |i, falloff| {
+        let flags = &self.cell_flags;
+        deposit_disc(w, h, flags, center, radius, |i, falloff| {
             grid[i] += amount * falloff;
         });
     }

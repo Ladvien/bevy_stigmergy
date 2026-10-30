@@ -36,13 +36,17 @@ pub(crate) const NB_NX: u8 = 2;
 pub(crate) const NB_PY: u8 = 4;
 /// The `-y` neighbour (`idx - width`) is floor.
 pub(crate) const NB_NY: u8 = 8;
+/// The cell itself is floor. A cell's flag byte is `IS_FLOOR | NB_*...` for floor and `0` for rock, so
+/// one load answers both "is this floor" and "which of its neighbours are".
+pub(crate) const IS_FLOOR: u8 = 16;
 
-/// The floor set, in the two shapes the passes want: an ascending list to iterate, and a mask to test.
+/// The floor set, in the two shapes the passes want: an ascending list to iterate, and one flag byte per
+/// grid cell to test ([`IS_FLOOR`] and the `NB_*` neighbour bits, `0` for rock).
 ///
-/// **The list is read off the mask, deliberately.** They are two views of the same set, and a mask that
-/// disagreed with the list would change diffusion silently at the map edges — the neighbour blend would
-/// include a cell the evaporation pass never touched. Deriving one from the other is what leaves nowhere
-/// to write that bug.
+/// **The list is read off the mask, deliberately, and the flags off the list.** They are views of the
+/// same set, and flags that disagreed with the list would change diffusion silently at the map edges —
+/// the neighbour blend would include a cell the evaporation pass never touched. Deriving one from the
+/// other is what leaves nowhere to write that bug.
 ///
 /// The iterator may yield cells in any order and may repeat one; cells outside the grid are dropped.
 /// The list comes out ascending row-major and repeat-free whatever it was given, and both properties
@@ -52,14 +56,14 @@ pub(crate) fn floor_sets(
     width: usize,
     height: usize,
     floor_cells: impl Iterator<Item = IVec2>,
-) -> (Vec<FloorCell>, Vec<bool>) {
+) -> (Vec<FloorCell>, Vec<u8>) {
     let mut mask = vec![false; width * height];
     for c in floor_cells {
         if in_grid(c, width, height) {
             mask[row_major(c, width)] = true;
         }
     }
-    let cells = mask
+    let cells: Vec<FloorCell> = mask
         .iter()
         .enumerate()
         .filter(|&(_, &floor)| floor)
@@ -82,13 +86,17 @@ pub(crate) fn floor_sets(
             FloorCell { idx, floor_nbrs }
         })
         .collect();
-    (cells, mask)
+    let mut flags = vec![0u8; width * height];
+    for fc in &cells {
+        flags[fc.idx] = IS_FLOOR | fc.floor_nbrs;
+    }
+    (cells, flags)
 }
 
 /// Walk the floor cells within `radius` (in cells) of `center`, calling `emit(cell_index, falloff)` with
 /// the linear falloff `1 - dist/radius` (`1.0` when `radius == 0`).
 ///
-/// The shared deposit kernel — the disc walk, the in-bounds-and-floor mask, and the falloff math — used
+/// The shared deposit kernel — the disc walk, the in-bounds-and-floor test, and the falloff math — used
 /// by both the scalar and the vectorial deposit paths, which differ only in what they accumulate.
 ///
 /// **This masks the destination cell, not the path.** It is a Euclidean disc that skips non-floor
@@ -99,7 +107,7 @@ pub(crate) fn floor_sets(
 pub(crate) fn deposit_disc(
     width: usize,
     height: usize,
-    floor_mask: &[bool],
+    cell_flags: &[u8],
     center: IVec2,
     radius: f32,
     mut emit: impl FnMut(usize, f32),
@@ -109,7 +117,7 @@ pub(crate) fn deposit_disc(
     for dy in -r..=r {
         for dx in -r..=r {
             let cell = center + IVec2::new(dx, dy);
-            if !in_grid(cell, width, height) || !floor_mask[row_major(cell, width)] {
+            if !in_grid(cell, width, height) || cell_flags[row_major(cell, width)] & IS_FLOOR == 0 {
                 continue;
             }
             let dist = ((dx * dx + dy * dy) as f32).sqrt();
