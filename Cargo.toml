@@ -21,7 +21,7 @@ reflect = ["dep:bevy_reflect", "bevy_math/bevy_reflect"]
 
 # **`bevy_math`, not `bevy`, and the feature set is copied from `bevy_internal` on purpose.**
 #
-# This crate needs two types (`Vec2`, `IVec2`), one parallel iterator and no ECS at all. Depending on the
+# This crate needs two types (`Vec2`, `IVec2`) and no ECS at all, and it owns no threads. Depending on the
 # whole engine would make a few hundred lines of stencil cost a renderer. The exact features matter
 # beyond tidiness: `bevy_math`'s DEFAULTS turn on `std`, which turns on `glam/std` — swapping glam's
 # transcendentals from libm to std's. Those feed `Quat::from_rotation_*` -> hashed `Transform`s -> the
@@ -30,17 +30,18 @@ reflect = ["dep:bevy_reflect", "bevy_math/bevy_reflect"]
 # did not already have, and no golden can move because a field changed crates.
 [dependencies]
 bevy_math = { version = "0.20.0", default-features = false, features = ["nostd-libm"] }
-# https://github.com/rayon-rs/rayon — the diffusion stencil's disjoint-slot parallel pass.
-rayon = "1"
 # https://github.com/serde-rs/serde — the `serde` feature only; no derive machinery is compiled unless asked.
 serde = { version = "1", default-features = false, features = ["derive"], optional = true }
 # https://github.com/bevyengine/bevy — the `reflect` feature only, matching this repo's Bevy pin. It is
 # meant for Bevy apps, which already have std.
 bevy_reflect = { version = "0.20.0", default-features = false, optional = true }
 
-# **Examples only.** The crate itself takes `bevy_math` and `rayon`, and `tests/leaf.rs` enforces it by
+# **Examples and tests only.** The crate itself takes `bevy_math`, and `tests/leaf.rs` enforces it by
 # reading `[dependencies]` only, deliberately. The `foraging` example needs a window and a 2D camera to
 # show the trail emerging, so it takes the full umbrella here, where it cannot reach a consumer's
 # dependency graph.
 [dev-dependencies]
 bevy = { version = "0.20.0" }
+# https://github.com/rayon-rs/rayon — the bench's and tests' stand-in for a caller's own pool, running
+# `evaporate_diffuse_with` chunks. The crate never calls it (issue #6: it parked Bevy workers).
+rayon = "1"
