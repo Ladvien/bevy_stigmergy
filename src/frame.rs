@@ -17,8 +17,8 @@ use crate::grid::in_grid;
 ///
 /// The convention, which is the one this maps with:
 ///
-/// - **Row-major, `y * width + x`**, ascending, which is what [`StigGrid::new`](crate::StigGrid::new)
-///   requires of its floor set.
+/// - **Row-major, `y * width + x`**, ascending — the order [`StigGrid::new`](crate::StigGrid::new) keeps
+///   its floor set in.
 /// - **A cell owns the square from its corner, not its centre**: `world_to_cell` **floors**, so
 ///   `-0.01` lands in cell `-1`, not cell `0`.
 /// - **A centre is half a cell in**: `cell_centre` adds `0.5 * cell_size`.
@@ -100,9 +100,8 @@ impl CellFrame {
         in_grid(c, self.width, self.height)
     }
 
-    /// Every cell, **ascending row-major** — exactly the order
-    /// [`StigGrid::new`](crate::StigGrid::new) requires of its floor set, so
-    /// `grid(…, frame.cells(), …)` needs no sort.
+    /// Every cell, **ascending row-major** — the order [`StigGrid::new`](crate::StigGrid::new) keeps its
+    /// floor set in, so `grid(…, frame.cells(), …)` is already in the crate's own order.
     pub fn cells(&self) -> impl Iterator<Item = IVec2> + '_ {
         (0..self.height).flat_map(move |y| (0..self.width).map(move |x| IVec2::new(x as i32, y as i32)))
     }
