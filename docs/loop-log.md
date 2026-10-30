@@ -72,3 +72,67 @@ Pass 6 of the driver (passes 2–5 failed at start-up with no model login; pass 
 3. One `run` call per tick for every diffusing channel (one scope instead of N), which needs a double-buffer per channel; measure the per-scope cost first (64²: 8 µs inline vs 17 µs on Bevy's pool).
 4. A cost that scales with live cells, not the whole grid, for large mostly-empty maps.
 5. Bench hygiene: run `rally_evaporate` in its own process or first, so the cases before it stop biasing it; then capture knobs (`STIG_FRAMES`, `STIG_SHOT`) on the examples.
+
+## Iteration 2 — 2026-10-30 — diffusion conserves value at walls (#7)
+
+**Triage.** Open issues: #7 only (`bug`), the item. No `consumer` or enhancement issue was open, so nothing was skipped. Parked work: no `wiggum/parked-*` branch; the only `parked` commit is pass 1's `fa78311` on `loop/iter-1`, superseded by iteration 1 and ignored. `git status` clean on `main` at start. Corpus re-scan: `catalog_recent` (200) held only forest-ecology and psychology embeds, nothing in this crate's domains. Filed during the pass: **#8** (`bug`), `gradient_cell` reads walls as zero (below).
+
+**What changed and why it ranked first.** #7 is a wrong result in every consumer: the stencil blended each floor cell toward the mean of its floor neighbours, which is not symmetric wherever a cell has fewer than four, so value was made or destroyed beside every wall, rock and grid edge. The runner-up was the backlog's NaN-deposit refusal, also a bug but one only a host bug triggers; #7 fires on every map with a wall.
+
+- `DiffuseChunk::run` now computes `own·(1 − n·d/4) + (d/4)·Σ neighbours`: every floor–floor edge exchanges `d/4` of the difference both ways and a wall face exchanges nothing (the Perron matrix `I − (d/4)L` of the floor graph). The per-cell division is gone.
+- A cell with four floor neighbours computes the same bits as 0.2.1 from the same input (`d/4` and `1 − 4·(d/4)` are exact); boundary cells differ. Rust one-tick dump: 0 of 1 824 interior cells differ, 971 of 971 boundary cells do, rock 0.
+- Three permanent tests in `src/lib.rs` (`diffusion_moves_value_without_making_or_losing_any`, `with_diffusion_on_the_total_decays_at_exactly_the_evaporation_rate`, `a_uniform_field_stays_uniform_beside_walls`); the first two fail on 0.2.1 (−9.8%, −11.7%, −35%; +6.0%), the third guards the other half of a symmetric exchange.
+- `tests/caller_thread.rs`: its plain two-pass reference tick encoded the old rule; it now encodes the new one, assertion unchanged (bit-for-bit, inline and 5 chunks). **Assumed decision (owner may override)**, posted on #7 with label `assumed-decision`: update the oracle rather than delete the test or leave the bug; and the `own·(1 − n·q) + q·Σ` form over the per-edge flux sum (same conservation, keeps interior bits).
+- Docs: `ChannelDef::diffuse` and `evaporate_diffuse` rustdoc, README "Units and time", CHANGELOG `Fixed`, `docs/research/conservative-diffusion.md` (new), pointer in `diffusion-scheduling.md`.
+
+**Sources.** Model: `10.1109_jproc.2006.887293` (Olfati-Saber, Fax & Murray 2007: symmetric exchange keeps the sum; the neighbour-mean form keeps only a degree-weighted average; `ε < 1/Δ`), `10.3133_tm6a55` (MODFLOW 6: one conductance per cell pair, no-flow cells). Shipping game: `gameaipro4-ch06-flooding-influence-map-chase-dishonored-2` (Couvidou: the chase goal is the value-weighted centroid of the map), `GameAIPro2_Chapter29_Escaping_the_Grid_Infinite-Resolution_Influence_Mapping` (Lewis). Technical: GPU Gems ch. 38 (Harris, stem `GPU Gems- Programming Techniques, Tips and Tricks for -- Randima Fernando; …`: per-cell boundary directions, pure Neumann walls), `10.48550_arXiv.1312.3300` (Revol & Théveny: float non-associativity). All five new stems added to `corpus.md`.
+
+**home-still.** distill healthy (MCP, `bge-m3`, 18 070 documents). Scribe: big's backend unreachable; bmb healthy and full (3 converting, 881 queued). Pending index: `10.1109_jproc.2006.887293` is searchable in distill but has no catalog row and no markdown (`catalog_read`/`markdown_read` fail).
+
+**Field checklist** (`/tmp/s2/findings.md`; before = `e1b21f6` (0.2.1), after = this branch):
+
+| Check | Before | After |
+|---|---|---|
+| conservation, evap 0, 1000 ticks: open / walled+gap / sealed | +1.932e-2 / −7.004e-2 (worst −7.988e-2) / −7.003e-2 | −1.3e-8 / −6.8e-8 / −8.1e-8 |
+| 100 000 ticks, walled, evap 0 | −7.21e-2 | +1.28e-4 (float32; the per-edge flux form: −8.6e-5) |
+| one deposit of 1.0, settled (20 000 ticks): room centre / corridor / dead-end tip / room corner | 1.0758 / 0.5378 / 0.2689 / 0.5379 | 1.0002 / 0.9999 / 0.9999 / 1.0001 |
+| total vs `(1 − 0.1)^20`, walled, with diffusion | +7.763e-3 | −4.740e-7 |
+| single-cell decay vs `(0.9)^20` | −5.1e-7 | −5.1e-7 |
+| rock max; sealed wall far side | 0; 0 | 0; 0 |
+| gap open: far-side total; near-side gradient toward source | 1.858; 31/31 | 1.235; 31/31 |
+| soak 10 000 ticks × 16 deposits (87 952 refused) | 0 NaN, 0 negative | 0 NaN, 0 negative |
+| gradient on ramp 2x + y | (4, 2), 0 rad | (4, 2), 0 rad |
+| uniform 1.0 over walled floor, 1000 ticks | max dev 0 | max dev 0 |
+| chunk counts 1–10 000 reversed; bench determinism (caller, Bevy 8, rayon 1/2/16, 9 runs) | one hash each (`c3b6…`; `d791495f2f937977`) | one hash each (`b408…`; `a446265d6a95cf51`) |
+| foraging HOME beacon settled: total (analytic 6251.1) | 6371.2 | 6250.7 (max change 0.74% of peak) |
+
+**Visible.** `trail` (`/tmp/s2/{before,after}/trail.txt`): the gap cell reads 0.474 (was 0.395) and the walked row through it `-----=+=--` (was `------==--`); the far-side wall cells (25,5) and (25,11) no longer light up. `docs/foraging.gif` not regenerated: the settled beacon moves ≤ 0.74% of its peak, the example has no capture knob yet, and the caption still describes the file.
+
+**Bench** (`/tmp/s2/{before,after}/bench-r*.txt`; interleaved, 3 rounds `RAYON_NUM_THREADS=1` + 6 rounds default, load 6–10; median of medians, µs):
+
+| Case | Before | After |
+|---|---|---|
+| inline 64² ch1 / ch4 / ch8 (9 runs) | 8.0 / 32.6 / 65.4 | 7.2 / 29.0 / 58.7 (0.89–0.90×) |
+| inline 256² ch1 / ch4 / ch8 | 223.9 / 881.3 / 1747.1 | 218.1 / 849.2 / 1696.9 (0.96–0.97×) |
+| inline 1024² ch1 / ch4 / ch8 | 3647 / 14918 / 29252 | 3483 / 14327 / 28234 (0.96×); p99 ch8 36 107 → 33 055 |
+| Bevy pool 1024² ch1 / ch4 / ch8 (6 default runs) | 779 / 3258 / 6254 | 752 / 3114 / 6211 |
+| Bevy pool 256² ch1 | 71.1 (6 default) / 73.3 (all 9) | 76.5 (1.08×) / 75.5 (1.03×); fastest 68.1 → 64.8: pool noise, logged |
+| rayon default 1024² ch8 | 6066 | 6241 (1.03×) |
+| busy_pool 175² ch2, Bevy system, 7 of 8 workers busy (6 default runs) | median 287, p99 347; parked 0/1000 in every run (10) | median 268, p99 286; parked 0/1000 in every run (9) |
+| rally_evaporate (code untouched) | bimodal | bimodal (0.35–2.32× between rounds) |
+
+**Critique and verdict** (`/tmp/s2/critique.md`): **GREAT.** Flaws kept: float32 rounding walks the total ~1e-4 per 1e4–1e5 ticks at evaporation 0 (form-independent); every boundary cell's bits change (release-noted); a 1-wide corridor now diffuses at the open-floor rate `d/4`, half of 0.2.1's; a narrow gap holds a walked trail longer and reads as a local maximum; `diffuse` outside `[0, 1]` or NaN is documented but not refused; `diffuse = 1` keeps the checkerboard mode (documented); `gradient_cell` still reports a slope off every wall on a flat field (filed as #8).
+
+**Gate:** build, build all-features, release, test, test all-features, examples, clippy `-D warnings`, rustdoc `-D warnings`, fmt, wasm32 — all green on `34c0249`.
+
+**Commits:** `31a338e` research note, `cf49bbe` corpus, `b0a157d` implementation + tests (`Fixes #7`), `29c6e4b` reference-tick oracle (assumed decision), `34c0249` docs, then this log.
+
+**Release:** none this pass. `v0.2.1` was tagged at 14:11 today, 38 minutes before this pass reached the release step, and the rule is one release per 6 hours; this change rides in the next release.
+
+### Ranked backlog
+
+1. **#8 (bug)**: `gradient_cell` reads rock and off-grid as 0, so on a flat field it reports a slope off every wall (927 of 2795 cells, max 1.414); a fleeing agent is pulled into walls. Make the query agree with the zero-flux wall (a missing neighbour reads as the cell itself), interior unchanged.
+2. **Bug, not filed:** `deposit` accepts NaN/∞ `amount`s and poisons the channel forever (`set_channel` already filters them). Refuse non-finite deposits.
+3. **Bug, not filed:** a `ChannelDef` with `diffuse` above 1 (negative values) or NaN (a poisoned channel) is used as given. Decide clamp vs. refuse at `StigGrid::new`, and the same for `evaporate`.
+4. One `run` call per tick for every diffusing channel (one scope instead of N), which needs a double-buffer per channel; measure the per-scope cost first (64²: 7 µs inline vs 11–17 µs on Bevy's pool).
+5. A cost that scales with live cells, not the whole grid, for large mostly-empty maps; then capture knobs (`STIG_FRAMES`, `STIG_SHOT`) and a fresh `docs/foraging.gif`.
