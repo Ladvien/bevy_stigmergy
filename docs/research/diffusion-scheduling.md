@@ -15,6 +15,7 @@ run the pass: median 0.41 ms, p90 14.0 ms, max 150.4 ms at load 8–22.
 | Technical | `Game Engine Architecture, Third Edition … Jason Gregory` §8.6.4 *Job Systems* | A game engine owns one job system that all per-frame work is kicked into; a second private pool is the anti-pattern. |
 | Technical | `10.1145/1806596.1806639` — Pan, Hindman & Asanović, *Composing parallel software efficiently with Lithe*, PLDI 2010 (abstract via `paper_search`; not in the corpus) | Names the failure: libraries that each own a pool oversubscribe the cores. |
 | Technical | `10.48550_arxiv.2512.04320` — Yan et al., *VLCs: Managing Parallelism with Virtualized Libraries*, 2025 (downloaded; conversion pending) | The same failure, measured on modern runtimes. |
+| Technical | `10.48550_arxiv.2606.24937` — *The Hitchhiker's Guide to Agentic AI: From Foundations to Systems*, 2026, §28 (roofline) | A kernel with few operations per byte moved is bound by memory traffic, and the remedy is to move fewer bytes. |
 
 ## Craft principle
 
@@ -60,11 +61,23 @@ stack issue #6 recorded.
 - `evaporate_diffuse(dt)` runs **inline on the calling thread**. No pool, no latch, nothing to wait on.
   At Sanctuary's size the serial pass is a fraction of a millisecond, so the default costs the caller's
   frame least.
-- `evaporate_diffuse_with(dt, chunks, run)` is the same tick with the diffusion pass handed to the caller
-  as `chunks` disjoint `DiffuseChunk`s, each a slice of floor cells with its own output slots. `run`
-  receives them (as an iterator, so nothing is allocated) and executes them wherever it likes: a Bevy
-  `ComputeTaskPool::scope`, `rayon::scope`, `std::thread::scope`, or a plain loop.
+- `evaporate_diffuse_with(dt, chunks, run)` is the same tick with the pass handed to the caller as
+  `chunks` disjoint `DiffuseChunk`s, each a slice of floor cells and the span of the next grid only they
+  write. `run` receives them (as an iterator, so nothing is allocated) and executes them wherever it
+  likes: a Bevy `ComputeTaskPool::scope`, `rayon::scope`, `std::thread::scope`, or a plain loop. A chunk
+  the runner never ran is run inline afterwards, so a runner bug costs time, never a stale field.
 - The two are one path: `evaporate_diffuse` is `evaporate_diffuse_with(dt, 1, run-each-inline)`.
+- **Once the work is on the caller's frame, its cost is the caller's, so the pass moves fewer bytes.**
+  The stencil is a handful of flops per cell against five loads and a store: memory-bound in the
+  roofline's sense, where the guide's rule is "If your kernel is memory-bound, reduce memory traffic
+  (quantization, caching, tiling)." 0.2.0 swept each channel three times — evaporate in place, stencil
+  into a floor-indexed buffer, scatter back into the grid. Now evaporation is applied as each value is
+  read (`v · retain`, the same float operation on the same operands, so no bit moves) and each chunk
+  writes straight into the double-buffer, which removes the evaporation sweep and the serial scatter.
+  Each floor cell carries a 4-bit mask of its floor neighbours, built once, so the stencil does no
+  bounds test and no mask load.
+- The floor list is read off the floor mask, so it is ascending and repeat-free whatever order the caller
+  hands cells in. Chunk spans depend on that; it also fixes a repeated cell being evaporated twice.
 - `rayon` leaves `[dependencies]`; the crate is `bevy_math` alone (plus the optional derive crates).
 
 ## Parameters
@@ -73,19 +86,23 @@ stack issue #6 recorded.
 |---|---|---|
 | default executor | inline, 1 chunk | issue #6 option 1; design default (the caller's frame) |
 | `chunks` | caller's, `0` treated as `1`, capped at the floor-cell count | design default |
-| chunk boundary | contiguous runs of the ascending floor list, sizes differing by at most 1 | design default |
+| chunk boundary | contiguous runs of the ascending floor list, floor-cell counts differing by at most 1; each chunk's output span runs from its first cell to the next chunk's | design default |
+| neighbour mask | 4 bits per floor cell (`+x`, `-x`, `+y`, `-y`), summed in that order | 0.2.0's E/W/S/N order, kept bit-for-bit |
 
 ## Validation targets
 
 - Bit-identical fields for every chunk count and every executor (the bench's `determinism` hashes at 1, 2
   and the default thread count, and a permanent test over chunk counts 1…64 and a count above the floor
-  size).
+  size), **and to 0.2.0**: every bench hash equal before and after, and a permanent test that compares
+  each tick against 0.2.0's two-pass algorithm written out plainly.
 - `evaporate_diffuse` completes while rayon's global pool is fully blocked (permanent test; before the
   change it hangs).
 - Busy-pool case (issue #6 acceptance): p99 ≤ 2× median for the 175×175 two-channel tick inside a Bevy
-  `TaskPool` with every other worker busy.
+  `App` system whose `ComputeTaskPool` has every other worker busy, and no tick in which the calling
+  thread parks.
 - Throughput: the inline path no slower than the old `RAYON_NUM_THREADS=1` path; the rayon-run
   `evaporate_diffuse_with` no slower than the old default-pool path, within 5%.
+- A floor set handed in reversed and repeated gives the same bits and hotspot as the ascending one.
 
 ## What great looks like
 
@@ -98,7 +115,9 @@ median to p99, at any load.
 
 - Removed the internal `rayon` parallel pass (0.2.0). Its result was bit-identical; its latency was not
   bounded, because completion depended on threads the caller does not schedule (issue #6, Lithe). The
-  default is now inline, with a caller-run chunked form for large grids. Design decision recorded on #6.
+  default is now inline, with a caller-run chunked form for large grids. Assumed decision recorded on #6.
+- The floor set no longer has to be ascending and repeat-free; it is normalised on construction. 0.2.0
+  documented the order as a requirement and double-evaporated a repeated cell. Design default.
 
 ## Pending index
 
