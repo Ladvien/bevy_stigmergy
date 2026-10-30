@@ -64,6 +64,21 @@ let uphill = field.gradient_cell(SCENT, frame.world_to_cell(agent));
 
 The crate has no clock. `evaporate_diffuse(dt)` applies `ChannelDef::evaporate` **per unit of whatever `dt` you pass**: per second when you step in seconds, per game-day when you step in game-days. The same number means different things in each — `0.4` loses 40% of the field per second in the first and 40% per game-day in the second. `diffuse` is different: it is a blend weight applied **per call**, not scaled by `dt`, so two calls at `dt/2` spread twice as much as one call at `dt`.
 
+## Which thread does the work
+
+**Yours.** `evaporate_diffuse(dt)` runs inline on the thread that calls it and returns; the crate owns no thread pool and depends on none. A Bevy system that calls it shows up in a profile as compute on that worker, never as a wait on another pool's threads.
+
+A large grid can spread the diffusion stencil over **your** pool instead. `evaporate_diffuse_with` hands you the pass as disjoint chunks and you run them wherever you like — here, Bevy's own `ComputeTaskPool`:
+
+```rust
+let pool = ComputeTaskPool::get();
+field.evaporate_diffuse_with(dt, pool.thread_num(), |chunks| {
+    pool.scope(|s| chunks.for_each(|chunk| s.spawn(async move { chunk.run() })));
+});
+```
+
+`rayon::scope`, `std::thread::scope` or a plain loop work the same way. The result is bit-identical to `evaporate_diffuse` for any chunk count and any runner, and a chunk your runner drops instead of running is run inline afterwards, so a runner bug costs time, never a stale field.
+
 ## Features
 
 - `serde` — `Serialize`/`Deserialize` on `ChannelDef`, `RallyDef` and `CellFrame`. Also turns on `bevy_math/serialize`, which glam's impls need.
@@ -78,7 +93,7 @@ Both are off by default, and neither adds a type to the dependency graph a consu
 
 ## Determinism
 
-Written to be bit-reproducible, because a simulation that hashes its state cannot afford otherwise: the neighbour sum keeps a fixed E/W/S/N order (float addition is non-associative); the diffusion is a pure stencil over disjoint output slots, so its result is identical at any thread count — which is what makes the `rayon` pass safe; and skipping rock cells is exact rather than approximate. `channels()` and `cells()` expose the **full** grids so you can fold the rock-cells-stay-zero invariant into your own fingerprint.
+Written to be bit-reproducible, because a simulation that hashes its state cannot afford otherwise: the neighbour sum keeps a fixed E/W/S/N order (float addition is non-associative); the diffusion is a pure stencil over disjoint output slots, so its result is identical however `evaporate_diffuse_with` splits it and on however many threads you run it; and skipping rock cells is exact rather than approximate. `channels()` and `cells()` expose the **full** grids so you can fold the rock-cells-stay-zero invariant into your own fingerprint.
 
 ## Used by
 
