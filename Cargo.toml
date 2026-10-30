@@ -1,6 +1,6 @@
 [package]
 name = "bevy_stigmergy"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.97.1"
 description = "Stigmergic influence fields over a fixed cell grid: decaying scalar channels plus a vectorial rally pheromone, on bevy_math."
