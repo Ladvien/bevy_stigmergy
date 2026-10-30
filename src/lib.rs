@@ -45,8 +45,9 @@
 //! * The neighbour sum keeps a fixed E/W/S/N order. Float addition is non-associative, so the order is
 //!   load-bearing rather than stylistic.
 //! * The diffusion is a pure stencil over disjoint output slots — each cell reads the *previous* grid
-//!   and writes only its own slot — so its result is identical for any thread count, which is what
-//!   makes the `rayon` pass safe.
+//!   and writes only its own slot — so its result is identical however the pass is split and on
+//!   however many threads it runs, which is what makes [`StigGrid::evaporate_diffuse_with`] safe to
+//!   hand to the caller's pool.
 //! * Skipping rock cells is exact, not an approximation: deposits are floor-masked, `0 · retain` is
 //!   still 0, and the diffusion double-buffer's rock cells stay 0 across the swap.
 //! * [`StigGrid::channels`] and [`RallyGrid::cells`] expose the **full** grids so a caller can fold the
@@ -63,7 +64,7 @@ mod vector;
 
 pub use frame::CellFrame;
 pub use grid::{in_grid, row_major};
-pub use scalar::{ChannelDef, StigGrid};
+pub use scalar::{ChannelDef, DiffuseChunk, DiffuseChunks, StigGrid};
 pub use vector::{RallyDef, RallyGrid};
 
 #[cfg(test)]
