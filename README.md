@@ -66,6 +66,8 @@ The crate has no clock. `evaporate_diffuse(dt)` applies `ChannelDef::evaporate` 
 
 Diffusion moves value and never makes or loses any. Each call, every floor cell trades `diffuse / 4` of the difference with each floor neighbour — in open floor, a blend toward the neighbour average — and nothing across a wall, so with no deposits the floor total after `k` ticks is `(1 − evaporate·dt)^k` of the start, to float rounding, whether the scent sits in a hall or at the end of a dead-end corridor. Keep `diffuse` in `[0, 1]`; up to 1 no value goes negative.
 
+`gradient_cell` reads a wall the same way: a rock or off-grid neighbour counts as the cell's own value, so a field that is flat across a wall has no slope through it, and nothing pushes a fleeing agent into a wall but the field on the floor side. Beside a wall the component across it is the one-sided difference from the floor side; in open floor, and along a wall, it is the plain central difference. A rock or off-grid cell has no slope: `Vec2::ZERO`.
+
 ## Which thread does the work
 
 **Yours.** `evaporate_diffuse(dt)` runs inline on the thread that calls it and returns; the crate owns no thread pool and depends on none. A Bevy system that calls it shows up in a profile as compute on that worker, never as a wait on another pool's threads.
