@@ -27,9 +27,17 @@
 //! This is the only example here that needs a GPU; `trail` and `rally` print to a terminal.
 //!
 //! Run: `cargo run -p bevy_stigmergy --example foraging`
+//!
+//! Capture (how `docs/foraging.gif` is made): `STIG_FRAMES=<n>` runs exactly `n` fixed steps and exits;
+//! `STIG_SHOT=<dir>` saves the window as `<dir>/foraging-<step>.png` at the last step, and every
+//! `STIG_SHOT_EVERY=<k>` steps as well. Everything, the wander included, runs on the step count rather
+//! than the wall clock, so a capture is the same picture on any machine at any frame rate.
+
+use std::path::PathBuf;
 
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 use bevy_stigmergy::{ChannelDef, StigGrid};
 
 const W: usize = 84;
@@ -73,6 +81,35 @@ fn world_of(p: Vec2) -> Vec3 {
 #[derive(Resource)]
 struct Field(StigGrid<3>);
 
+/// Fixed steps taken so far: the example's only clock.
+#[derive(Resource, Default)]
+struct Steps(u32);
+
+/// The capture knobs, read once from the environment.
+#[derive(Resource)]
+struct Capture {
+    /// `STIG_FRAMES`: stop stepping after this many steps, save the last still, exit.
+    frames: Option<u32>,
+    /// `STIG_SHOT`: the directory stills are saved into.
+    dir: Option<PathBuf>,
+    /// `STIG_SHOT_EVERY`: also save a still every this many steps.
+    every: Option<u32>,
+    /// The last step a still was taken at, so a frozen last step is saved once.
+    shot: Option<u32>,
+}
+
+impl Capture {
+    fn from_env() -> Self {
+        let num = |key: &str| std::env::var(key).ok().and_then(|v| v.parse::<u32>().ok()).filter(|&n| n > 0);
+        Self {
+            frames: num("STIG_FRAMES"),
+            dir: std::env::var_os("STIG_SHOT").map(PathBuf::from),
+            every: num("STIG_SHOT_EVERY"),
+            shot: None,
+        }
+    }
+}
+
 #[derive(Component)]
 struct Tile(IVec2);
 
@@ -96,8 +133,10 @@ fn main() {
             }),
             ..default()
         }))
+        .insert_resource(Capture::from_env())
+        .init_resource::<Steps>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (step_field, paint_tiles).chain())
+        .add_systems(Update, (step_field, paint_tiles, capture).chain())
         .run();
 }
 
@@ -176,11 +215,16 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
 
 /// Deposit, decide, move, then let the field evaporate and diffuse.
 fn step_field(
-    time: Res<Time>,
+    capture: Res<Capture>,
+    mut steps: ResMut<Steps>,
     mut field: ResMut<Field>,
     mut foragers: Query<(&mut Forager, &mut Transform, &mut Sprite)>,
 ) {
-    let t = time.elapsed_secs();
+    if capture.frames.is_some_and(|n| steps.0 >= n) {
+        return;
+    }
+    steps.0 += 1;
+    let t = steps.0 as f32 * DT;
 
     // The two constant sources. Everything else in the field is laid by the foragers.
     field.0.deposit(HOME, NEST, 90.0 * DT);
@@ -244,6 +288,30 @@ fn step_field(
     }
 
     field.0.evaporate_diffuse(DT);
+}
+
+/// Save a still when a capture knob asks for one, and exit once the last one is on disk.
+fn capture(mut commands: Commands, steps: Res<Steps>, mut capture: ResMut<Capture>, mut exit: MessageWriter<AppExit>) {
+    let step = steps.0;
+    let last = capture.frames == Some(step);
+    let periodic = capture.every.is_some_and(|k| step % k == 0);
+    if capture.shot == Some(step) || !(last || periodic) {
+        return;
+    }
+    capture.shot = Some(step);
+    let Some(dir) = capture.dir.clone() else {
+        if last {
+            exit.write(AppExit::Success);
+        }
+        return;
+    };
+    let mut shot = commands.spawn(Screenshot::primary_window());
+    shot.observe(save_to_disk(dir.join(format!("foraging-{step:05}.png"))));
+    if last {
+        shot.observe(|_: On<ScreenshotCaptured>, mut exit: MessageWriter<AppExit>| {
+            exit.write(AppExit::Success);
+        });
+    }
 }
 
 fn paint_tiles(field: Res<Field>, mut tiles: Query<(&Tile, &mut Sprite)>) {
