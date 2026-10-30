@@ -9,6 +9,13 @@ the corpus yet; see the note that cites it.
   Physarum Lab Based on Cellular Automata Agents* (IEEE Access). The determinism basis: a per-cell
   diffusion stencil on double buffers.
 - `10.1016_j.jtbi.2012.06.017` — Bonifaci, Mehlhorn & Varma, *Physarum can compute shortest paths*.
+- `10.1038_s41598-017-06961-y` — Evangelidis, Jones, Dourvas, Tsompanas, Sirakoulis & Adamatzky 2017,
+  *Physarum machines imitating a Roman road network: the 3D approach* (Sci. Rep.). Foraging transport
+  networks over a relief, in the lab and in a model.
+- `10.1038_s41598-020-80320-2` — *Substrate and cell fusion influence on slime mold network dynamics*
+  (Sci. Rep. 2020). Not yet read; listed for slime-mould trail networks.
+- `10.1038_s41598-018-23649-z` — *Diffusion-Limited Growth of Microbial Colonies* (Sci. Rep. 2018). Not
+  yet read; listed for growth limited by a diffusing field.
 
 ## Shipping games — influence maps, scent and trail systems
 
