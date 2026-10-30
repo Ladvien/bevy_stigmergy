@@ -389,6 +389,106 @@ mod tests {
         assert_eq!(grad.y, 0.0, "the deposit is symmetric in y");
     }
 
+    // ---- Issue #8: the gradient beside a wall agrees with the zero-flux wall the tick computes. ----
+
+    /// A `w`×`h` field holding `f(x, y)` at every cell, in the row-major order `set_channel` takes.
+    fn field_of(w: usize, h: usize, f: impl Fn(i32, i32) -> f32) -> Vec<f32> {
+        let mut values = Vec::with_capacity(w * h);
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                values.push(f(x, y));
+            }
+        }
+        values
+    }
+
+    /// A one-channel grid over `floor`, 64×48, holding `values`, with the tick off.
+    fn held_field(floor: &[IVec2], values: &[f32]) -> StigGrid<1> {
+        let defs = [ChannelDef { evaporate: 0.0, diffuse: 0.0, deposit_radius: 0.0 }];
+        let mut g = StigGrid::<1>::new(64, 48, floor.iter().copied(), defs);
+        assert!(g.set_channel(0, values));
+        g
+    }
+
+    #[test]
+    fn a_uniform_field_has_no_slope_anywhere_walls_included() {
+        // 0.2.x read a rock or off-grid neighbour as 0.0, so a flat field reported a slope pointing away
+        // from every wall, rock and grid edge, and an agent fleeing it was pulled into them. The tick
+        // leaves a uniform field exactly uniform, so this is the field an idle map holds.
+        let defs = [ChannelDef { evaporate: 0.0, diffuse: 0.25, deposit_radius: 0.0 }];
+        let floor: Vec<IVec2> = walled_floor().collect();
+        let mut g = StigGrid::<1>::new(64, 48, floor.iter().copied(), defs);
+        assert!(g.set_channel(0, &[1.0; 64 * 48]));
+        g.evaporate_diffuse(1.0);
+        for c in floor {
+            assert_eq!(g.gradient_cell(0, c), Vec2::ZERO, "a flat field has a slope at {c}");
+        }
+    }
+
+    #[test]
+    fn each_floor_face_of_a_cell_adds_its_slope_and_a_wall_face_adds_none() {
+        // On the ramp 2x + y the central difference is (4, 2) in open floor: one cell of slope per floor
+        // face along an axis. A wall face adds nothing, so beside a wall the component across it is the
+        // one-sided difference from the floor side, a 1-wide corridor has no cross slope, and nothing
+        // ever points downhill on a ramp that only rises.
+        let ramp = field_of(64, 48, |x, y| (2 * x + y) as f32);
+        let maps: [(&str, Vec<IVec2>); 2] =
+            [("walled", walled_floor().collect()), ("dead end", dead_end_floor().collect())];
+        for (name, floor) in maps {
+            let g = held_field(&floor, &ramp);
+            let cells: std::collections::HashSet<IVec2> = floor.iter().copied().collect();
+            let is_floor = |c: IVec2| cells.contains(&c);
+            let (mut open, mut beside_wall) = (0, 0);
+            for &c in &floor {
+                let faces = |a: IVec2, b: IVec2| f32::from(is_floor(c + a)) + f32::from(is_floor(c + b));
+                let want = Vec2::new(2.0 * faces(IVec2::X, IVec2::NEG_X), faces(IVec2::Y, IVec2::NEG_Y));
+                assert_eq!(g.gradient_cell(0, c), want, "{name}: wrong slope at {c}");
+                if want == Vec2::new(4.0, 2.0) {
+                    open += 1;
+                } else {
+                    beside_wall += 1;
+                }
+            }
+            assert!(open > 0 && beside_wall > 0, "{name}: the map must have both open floor and wall faces");
+        }
+    }
+
+    #[test]
+    fn a_field_flat_across_a_wall_has_no_slope_across_it() {
+        // A field that varies along one axis only is flat across every wall face on the other, so the
+        // component across it is exactly zero at every floor cell, wall or no wall. Fleeing it can then
+        // never point into a wall.
+        let floor: Vec<IVec2> = walled_floor().collect();
+        let along_y = held_field(&floor, &field_of(64, 48, |_, y| (0.37 * y as f32).sin()));
+        let along_x = held_field(&floor, &field_of(64, 48, |x, _| (0.29 * x as f32).cos()));
+        let (mut y_slopes, mut x_slopes) = (0, 0);
+        for &c in &floor {
+            let (gy, gx) = (along_y.gradient_cell(0, c), along_x.gradient_cell(0, c));
+            assert_eq!(gy.x, 0.0, "a field flat along x has an x slope at {c}");
+            assert_eq!(gx.y, 0.0, "a field flat along y has a y slope at {c}");
+            y_slopes += usize::from(gy.y != 0.0);
+            x_slopes += usize::from(gx.x != 0.0);
+        }
+        assert!(y_slopes > 1000 && x_slopes > 1000, "the fields must really slope: {y_slopes}, {x_slopes}");
+    }
+
+    #[test]
+    fn a_cell_that_is_not_floor_has_no_slope() {
+        // Rock holds 0.0 as a storage invariant, not as a value, and off the grid there is no field: both
+        // read as the empty answer, however far off the grid and next to however steep a slope. A rock
+        // cell read against its floor neighbours would push a fleeing agent standing in it deeper in.
+        let floor: Vec<IVec2> = walled_floor().collect();
+        let g = held_field(&floor, &field_of(64, 48, |x, y| (2 * x + y) as f32));
+        let rock = IVec2::new(32, 10);
+        assert!(!floor.contains(&rock) && floor.contains(&IVec2::new(31, 10)));
+        assert_eq!(g.gradient_cell(0, IVec2::new(31, 10)), Vec2::new(2.0, 2.0), "the floor beside it slopes");
+        let not_floor = [rock, IVec2::new(0, 0), IVec2::new(-1, 5), IVec2::new(64, 5), IVec2::new(5, 48)];
+        let extremes = [IVec2::MAX, IVec2::MIN, IVec2::new(i32::MAX, 0), IVec2::new(0, i32::MIN)];
+        for c in not_floor.into_iter().chain(extremes) {
+            assert_eq!(g.gradient_cell(0, c), Vec2::ZERO, "slope at {c}");
+        }
+    }
+
     #[test]
     fn saturation_reports_a_sharp_peak_as_not_flat() {
         let defs = [ChannelDef { evaporate: 0.0, diffuse: 0.0, deposit_radius: 0.0 }];

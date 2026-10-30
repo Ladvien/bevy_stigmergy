@@ -9,6 +9,9 @@
 //!   rayon pool (`RAYON_NUM_THREADS` sets it) and `evaporate_diffuse_with_bevy` to Bevy's
 //!   `ComputeTaskPool`, the two ways a caller with a large grid spreads it. `rally_evaporate` is
 //!   `RallyGrid::evaporate`.
+//! - **Query:** `gradient_cell_x10000` is one crowd's read of a one-channel field after 20 ticks: 10 000
+//!   `gradient_cell` calls at hashed agent cells (beside walls, on rock and just off the grid among
+//!   them), timed as one batch; its hash folds every returned slope.
 //! - **Busy pool** (issue #6): a 175×175 two-channel tick from inside a Bevy `App` system whose
 //!   `ComputeTaskPool` has every other worker busy. What is timed is the caller's wall clock around the
 //!   call, so a call that parks shows as the stall it is; the line adds `max_us`, `parked_ticks` (ticks in
@@ -192,6 +195,38 @@ fn rally(w: usize, h: usize) {
     line("rally_evaporate", w, h, 1, "caller", us, hash);
 }
 
+/// The agents a crowd query reads at: hashed cells over the grid and a one-cell margin around it.
+const QUERY_AGENTS: u64 = 10_000;
+
+fn gradient(w: usize, h: usize) {
+    let mut grid = StigGrid::<1>::new(w, h, floor(w, h).into_iter(), defs::<1>());
+    for t in 0..WARMUP {
+        deposit(&mut grid, w, h, t);
+        grid.evaporate_diffuse(0.1);
+    }
+    let agents: Vec<IVec2> = (0..QUERY_AGENTS)
+        .map(|k| {
+            let r = mix(k ^ 0xa9e7_0000);
+            IVec2::new((r % (w as u64 + 2)) as i32 - 1, ((r >> 32) % (h as u64 + 2)) as i32 - 1)
+        })
+        .collect();
+    let mut us = Vec::with_capacity(measured_ticks());
+    for t in 0..WARMUP + measured_ticks() {
+        let start = Instant::now();
+        let sum = agents.iter().fold(Vec2::ZERO, |acc, &c| acc + grid.gradient_cell(0, c));
+        let el = start.elapsed().as_secs_f64() * 1e6;
+        std::hint::black_box(sum);
+        if t >= WARMUP {
+            us.push(el);
+        }
+    }
+    let hash = fnv(agents.iter().flat_map(|&c| {
+        let g = grid.gradient_cell(0, c);
+        [g.x.to_bits(), g.y.to_bits()]
+    }));
+    line("gradient_cell_x10000", w, h, 1, "caller", us, hash);
+}
+
 /// This thread's `(voluntary, involuntary)` context switches from Linux's `/proc/thread-self/status`;
 /// `None` elsewhere. A voluntary switch is the thread going to sleep — parking on a latch. An
 /// involuntary one is the OS preempting it, which a loaded host does to any thread.
@@ -341,6 +376,7 @@ fn main() {
         throughput_all::<4>(s, s);
         throughput_all::<8>(s, s);
         rally(s, s);
+        gradient(s, s);
     }
     busy_pool("busy_pool", tick::<2>);
     busy_pool("busy_pool_with_bevy", tick_bevy::<2>);
