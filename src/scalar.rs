@@ -61,7 +61,7 @@ pub struct StigGrid<const N: usize> {
     /// The floor cells — the only cells that ever carry value — precomputed once, each with its floor
     /// neighbours, so the per-tick passes skip the rock cells and the stencil tests no bounds.
     floor_cells: Vec<FloorCell>,
-    /// The same set as a mask, for the deposit kernel's destination test.
+    /// The same set as a mask, for the deposit kernel's destination test and the gradient's wall faces.
     floor_mask: Vec<bool>,
 }
 
@@ -103,21 +103,45 @@ impl<const N: usize> StigGrid<N> {
         if in_grid(c, self.width, self.height) { grid[row_major(c, self.width)] } else { 0.0 }
     }
 
-    /// Direction of *increasing* value, magnitude ≈ the local slope. Central differences on the
-    /// 4-neighbour cells; follow it with `+`, flee it with `-`.
+    /// Direction of *increasing* value, magnitude ≈ the local slope: the central difference over the
+    /// four neighbours, `(v(x+1) − v(x−1), v(y+1) − v(y−1))`. Follow it with `+`, flee it with `-`.
     ///
-    /// An undefined channel has no slope: it reads as [`Vec2::ZERO`], which every steering rule is
-    /// already written to ignore.
+    /// A wall is a face nothing crosses, here as in [`evaporate_diffuse`](Self::evaporate_diffuse): a
+    /// neighbour that is rock or off the grid reads as the cell's own value, so the field has no slope
+    /// *through* a wall. Beside a wall, rock cell or grid edge the component across the wall face is the
+    /// one-sided difference from the floor side — zero where the field is flat across the wall, and zero
+    /// across a one-cell-wide corridor — while the component along the wall, and the whole gradient at a
+    /// cell with four floor neighbours, is the plain central difference. A uniform field has no slope
+    /// anywhere, walls included, so a fleeing agent is never pushed into a wall by the wall itself.
+    ///
+    /// A cell that is not floor — rock, or off the grid however far — has no slope and reads as
+    /// [`Vec2::ZERO`], as does an undefined channel: the empty answer every steering rule is already
+    /// written to ignore.
     #[inline]
     pub fn gradient_cell(&self, channel: usize, c: IVec2) -> Vec2 {
         let Some(grid) = self.channels.get(channel) else {
             return Vec2::ZERO;
         };
-        let at = |dx: i32, dy: i32| -> f32 {
-            let n = c + IVec2::new(dx, dy);
-            if in_grid(n, self.width, self.height) { grid[row_major(n, self.width)] } else { 0.0 }
-        };
-        Vec2::new(at(1, 0) - at(-1, 0), at(0, 1) - at(0, -1))
+        // Tested before any neighbour is formed, so no coordinate is ever added to: an extreme cell
+        // (a saturated `CellFrame::world_to_cell`) is just off the grid.
+        if !in_grid(c, self.width, self.height) {
+            return Vec2::ZERO;
+        }
+        let (w, h) = (self.width, self.height);
+        let (x, y) = (c.x as usize, c.y as usize);
+        let i = row_major(c, w);
+        if !self.floor_mask[i] {
+            return Vec2::ZERO;
+        }
+        let own = grid[i];
+        // Each neighbour index is formed only once its side is known to be in the grid, so every index
+        // is in range; across a wall face the neighbour reads as `own`. With four floor neighbours these
+        // are the same loads and subtractions as a plain central difference, bit for bit.
+        let px = if x + 1 < w && self.floor_mask[i + 1] { grid[i + 1] } else { own };
+        let nx = if x > 0 && self.floor_mask[i - 1] { grid[i - 1] } else { own };
+        let py = if y + 1 < h && self.floor_mask[i + w] { grid[i + w] } else { own };
+        let ny = if y > 0 && self.floor_mask[i - w] { grid[i - w] } else { own };
+        Vec2::new(px - nx, py - ny)
     }
 
     /// Add `amount` at `center`, smeared over the channel's `deposit_radius` with linear falloff. Only
