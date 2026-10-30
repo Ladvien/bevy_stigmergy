@@ -17,9 +17,16 @@ pub struct ChannelDef {
     /// something different in each: `0.4` loses 40% of the field per second in the first and 40% per
     /// game-day in the second.
     pub evaporate: f32,
-    /// Blend weight `[0,1]` toward the 4-neighbour average, applied **per call** of
-    /// [`StigGrid::evaporate_diffuse`] and *not* scaled by its `dt`. Calling it twice at `dt/2` spreads
-    /// twice as much as calling it once at `dt`.
+    /// Diffusion weight `[0,1]`, applied **per call** of [`StigGrid::evaporate_diffuse`] and *not*
+    /// scaled by its `dt`: on each call every floor cell exchanges `diffuse / 4` of the difference with
+    /// each floor neighbour. In open floor that is a blend toward the 4-neighbour average with weight
+    /// `diffuse`; a wall, rock cell or grid edge exchanges nothing, so diffusion moves value without
+    /// creating or destroying any. Calling it twice at `dt/2` spreads twice as much as calling it once
+    /// at `dt`.
+    ///
+    /// Up to 1, no cell gives away more than it holds, so no value goes negative. At exactly 1 a cell
+    /// with four floor neighbours keeps none of its own value, so a checkerboard pattern swaps each call
+    /// instead of smoothing out.
     pub diffuse: f32,
     /// Radius, **in cells**, that a single deposit smears over (placement kernel).
     pub deposit_radius: f32,
@@ -135,7 +142,10 @@ impl<const N: usize> StigGrid<N> {
     /// [`ChannelDef::evaporate`] is a fraction lost per unit of it. Diffusion is per call, not per unit
     /// of `dt`.
     ///
-    /// Diffusion blends only between floor cells, so influence does not seep through walls.
+    /// Diffusion moves value only between floor cells — a wall face exchanges nothing — so influence
+    /// does not seep through walls, and with no deposits the floor total changes only by evaporation:
+    /// after `k` calls at evaporation `e` it is `(1 - e·dt)^k` of the start, to float rounding, whatever
+    /// the floor plan.
     ///
     /// Nothing here touches a thread pool: the call does its work on the thread that made it and
     /// returns, so a Bevy system that calls it never parks waiting for another pool's threads. A large
@@ -325,14 +335,23 @@ pub struct DiffuseChunk<'a> {
 }
 
 impl DiffuseChunk<'_> {
-    /// Evaporate this chunk's floor cells and blend each toward the average of its floor neighbours,
-    /// reading the previous grid and writing only this chunk's cells of the next one.
+    /// Evaporate this chunk's floor cells and exchange `diffuse / 4` of the difference with each floor
+    /// neighbour, reading the previous grid and writing only this chunk's cells of the next one.
+    ///
+    /// The exchange is symmetric per floor–floor edge, so what a cell gives a neighbour is exactly what
+    /// that neighbour takes from it, and a wall face exchanges nothing: the floor total is conserved to
+    /// float rounding. For a cell with four floor neighbours this is the blend toward their average with
+    /// weight `diffuse`, computed with the same float operations.
     ///
     /// Evaporation is applied to each value as it is read, `value · retain`, which is the same float
     /// operation on the same operands as evaporating the whole grid first — so fusing the two passes
     /// changes no bit.
     pub fn run(self) {
         let DiffusePass { src, width: w, retain, diffuse } = self.pass;
+        // The per-edge weight. `diffuse / 4` is exact (a power-of-two scale), so for four floor
+        // neighbours `1 - 4·edge` is exactly `1 - diffuse` and `sum · edge` rounds the same real
+        // product as `(sum / 4) · diffuse`.
+        let edge = diffuse * 0.25;
         for fc in self.cells {
             let (i, nbrs) = (fc.idx, fc.floor_nbrs);
             let mut sum = 0.0;
@@ -356,9 +375,11 @@ impl DiffuseChunk<'_> {
                 n += 1.0;
             }
             let own = src[i] * retain;
-            let avg = if n > 0.0 { sum / n } else { own };
-            // In range by construction: this chunk's cells lie in `base..base + out.len()`.
-            self.out[i - self.base] = own * (1.0 - diffuse) + avg * diffuse;
+            // `own` sends `edge · own` across each of its `n` floor faces and receives `edge · v_j` back
+            // across each; a wall face carries nothing. With `diffuse ≤ 1`, `1 - n·edge ≥ 0`, so no
+            // value goes negative. In range by construction: this chunk's cells lie in
+            // `base..base + out.len()`.
+            self.out[i - self.base] = own * (1.0 - n * edge) + sum * edge;
         }
         *self.done = true;
     }
