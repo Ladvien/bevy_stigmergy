@@ -19,39 +19,69 @@ pub fn in_grid(c: IVec2, width: usize, height: usize) -> bool {
     c.x >= 0 && c.y >= 0 && (c.x as usize) < width && (c.y as usize) < height
 }
 
-/// A precomputed floor cell: its row-major grid index and its `(x, y)` coordinates, carried together so
-/// the per-tick passes need neither a floor test nor an `i % w` / `i / w` recompute.
-/// `idx == row_major(pos, width)`.
+/// A precomputed floor cell: its row-major grid index and which of its four neighbours are floor,
+/// carried together so the per-tick passes need no bounds test and no floor-mask lookup.
 #[derive(Clone, Copy)]
 pub(crate) struct FloorCell {
     pub(crate) idx: usize,
-    pub(crate) pos: IVec2,
+    /// [`NB_PX`] | [`NB_NX`] | [`NB_PY`] | [`NB_NY`] for each neighbour that is an in-grid floor cell.
+    pub(crate) floor_nbrs: u8,
 }
+
+/// The `+x` neighbour (`idx + 1`) is floor.
+pub(crate) const NB_PX: u8 = 1;
+/// The `-x` neighbour (`idx - 1`) is floor.
+pub(crate) const NB_NX: u8 = 2;
+/// The `+y` neighbour (`idx + width`) is floor.
+pub(crate) const NB_PY: u8 = 4;
+/// The `-y` neighbour (`idx - width`) is floor.
+pub(crate) const NB_NY: u8 = 8;
 
 /// The floor set, in the two shapes the passes want: an ascending list to iterate, and a mask to test.
 ///
-/// **Both are built in one pass from one iterator, deliberately.** They are two views of the same set,
-/// and a mask that disagreed with the list would change diffusion silently at the map edges — the
-/// neighbour blend would include a cell the evaporation pass never touched. Deriving them separately
-/// is the bug; this function exists so there is nowhere to write it.
+/// **The list is read off the mask, deliberately.** They are two views of the same set, and a mask that
+/// disagreed with the list would change diffusion silently at the map edges — the neighbour blend would
+/// include a cell the evaporation pass never touched. Deriving one from the other is what leaves nowhere
+/// to write that bug.
 ///
-/// The iterator must yield cells in **ascending row-major order** and must not repeat one. Ascending
-/// order is load-bearing for [`crate::StigGrid::hotspot_cell`], whose first-max-wins scan depends on it.
+/// The iterator may yield cells in any order and may repeat one; cells outside the grid are dropped.
+/// The list comes out ascending row-major and repeat-free whatever it was given, and both properties
+/// are load-bearing: [`crate::StigGrid::hotspot_cell`]'s first-max-wins scan depends on the order, and
+/// [`crate::DiffuseChunks`] hands each chunk the grid span between its first cell and the next chunk's.
 pub(crate) fn floor_sets(
     width: usize,
     height: usize,
     floor_cells: impl Iterator<Item = IVec2>,
 ) -> (Vec<FloorCell>, Vec<bool>) {
-    let mut cells = Vec::with_capacity(width * height);
     let mut mask = vec![false; width * height];
     for c in floor_cells {
-        if !in_grid(c, width, height) {
-            continue;
+        if in_grid(c, width, height) {
+            mask[row_major(c, width)] = true;
         }
-        let idx = row_major(c, width);
-        mask[idx] = true;
-        cells.push(FloorCell { idx, pos: c });
     }
+    let cells = mask
+        .iter()
+        .enumerate()
+        .filter(|&(_, &floor)| floor)
+        .map(|(idx, _)| {
+            let (x, y) = (idx % width, idx / width);
+            // Each test checks the grid edge first, so the mask is only read for an in-grid neighbour.
+            let mut floor_nbrs = 0;
+            if x + 1 < width && mask[idx + 1] {
+                floor_nbrs |= NB_PX;
+            }
+            if x > 0 && mask[idx - 1] {
+                floor_nbrs |= NB_NX;
+            }
+            if y + 1 < height && mask[idx + width] {
+                floor_nbrs |= NB_PY;
+            }
+            if y > 0 && mask[idx - width] {
+                floor_nbrs |= NB_NY;
+            }
+            FloorCell { idx, floor_nbrs }
+        })
+        .collect();
     (cells, mask)
 }
 

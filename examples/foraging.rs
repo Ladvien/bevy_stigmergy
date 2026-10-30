@@ -61,7 +61,7 @@ fn is_wall(c: IVec2) -> bool {
     false
 }
 
-/// Ascending row-major and free of repeats, which is what `StigGrid::new` asks for.
+/// Every cell that is not wall. `StigGrid::new` takes them in any order; this walk is ascending anyway.
 fn floor_cells() -> impl Iterator<Item = IVec2> {
     (0..H as i32).flat_map(|y| (0..W as i32).map(move |x| IVec2::new(x, y))).filter(|c| !is_wall(*c))
 }
