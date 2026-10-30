@@ -23,6 +23,10 @@
 //! ticks and in what order relative to everything else — which is the only useful arrangement, because
 //! "deposit before or after the agents think" is a gameplay decision, not a library's.
 //!
+//! It owns no threads either. [`StigGrid::evaporate_diffuse`] runs on the thread that calls it, so a
+//! Bevy system never parks waiting on another pool; a large grid hands its stencil to the caller's own
+//! pool with [`StigGrid::evaporate_diffuse_with`], and gets the same bits.
+//!
 //! It also does not name the channels. A channel table is game content; a library that shipped one
 //! would be naming somebody else's game. Channels are `usize` indices, and `N` is yours to pick.
 //!
@@ -45,8 +49,9 @@
 //! * The neighbour sum keeps a fixed E/W/S/N order. Float addition is non-associative, so the order is
 //!   load-bearing rather than stylistic.
 //! * The diffusion is a pure stencil over disjoint output slots — each cell reads the *previous* grid
-//!   and writes only its own slot — so its result is identical for any thread count, which is what
-//!   makes the `rayon` pass safe.
+//!   and writes only its own slot — so its result is identical however the pass is split and on
+//!   however many threads it runs, which is what makes [`StigGrid::evaporate_diffuse_with`] safe to
+//!   hand to the caller's pool.
 //! * Skipping rock cells is exact, not an approximation: deposits are floor-masked, `0 · retain` is
 //!   still 0, and the diffusion double-buffer's rock cells stay 0 across the swap.
 //! * [`StigGrid::channels`] and [`RallyGrid::cells`] expose the **full** grids so a caller can fold the
@@ -63,7 +68,7 @@ mod vector;
 
 pub use frame::CellFrame;
 pub use grid::{in_grid, row_major};
-pub use scalar::{ChannelDef, StigGrid};
+pub use scalar::{ChannelDef, DiffuseChunk, DiffuseChunks, StigGrid};
 pub use vector::{RallyDef, RallyGrid};
 
 #[cfg(test)]
@@ -71,7 +76,7 @@ mod tests {
     use super::*;
     use bevy_math::{IVec2, Vec2};
 
-    /// A `w`×`h` grid whose floor set is every cell — ascending row-major, as the contract requires.
+    /// A `w`×`h` grid whose floor set is every cell, ascending row-major.
     fn all_floor(w: usize, h: usize) -> impl Iterator<Item = IVec2> {
         (0..h as i32).flat_map(move |y| (0..w as i32).map(move |x| IVec2::new(x, y)))
     }
@@ -266,6 +271,27 @@ mod tests {
         let (cell, v) = g.hotspot_cell(0);
         assert_eq!(v, 1.0);
         assert_eq!(cell, Some(IVec2::new(3, 0)), "index 3 precedes index 5, so it wins the tie");
+    }
+
+    #[test]
+    fn a_floor_set_in_any_order_with_repeats_is_the_same_field() {
+        // A caller's floor set comes from its own map, in whatever order its walk produced. Reversed and
+        // with every cell listed twice, it must give the field the ascending list gives: the same bits
+        // after a run of ticks (a repeated cell is not evaporated twice), and the same hotspot.
+        let defs = [ChannelDef { evaporate: 0.3, diffuse: 0.25, deposit_radius: 1.5 }];
+        let floor: Vec<IVec2> = all_floor(9, 7).filter(|c| c.x != 4 || c.y == 5).collect();
+        let scrambled = floor.iter().rev().chain(floor.iter()).copied();
+        let mut ascending = StigGrid::<1>::new(9, 7, floor.iter().copied(), defs);
+        let mut any_order = StigGrid::<1>::new(9, 7, scrambled, defs);
+        for t in 0..40 {
+            for g in [&mut ascending, &mut any_order] {
+                g.deposit(0, IVec2::new(t % 9, (t * 3) % 7), 1.0);
+                g.evaporate_diffuse_with(0.1, 3, |chunks| chunks.for_each(DiffuseChunk::run));
+            }
+        }
+        let bits = |g: &StigGrid<1>| g.channels()[0].iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&any_order), bits(&ascending));
+        assert_eq!(any_order.hotspot_cell(0), ascending.hotspot_cell(0));
     }
 
     #[test]
