@@ -59,7 +59,11 @@ Pass 6 of the driver (passes 2–5 failed at start-up with no model login; pass 
 
 **Gate:** build, build all-features, release, test, test all-features, examples, clippy `-D warnings`, rustdoc `-D warnings`, fmt, wasm32 — all green on `9641b32`. No visible behaviour moved (field bits identical), so `docs/foraging.gif` is unchanged.
 
-**Commits:** `b26b359` `4b44569` (pass 1 research), `9e4cf38` corpus, `758f283` research update, `c20afea` implementation (`Fixes #6`), `9641b32` docs, then this log.
+**Commits:** `b26b359` `4b44569` (pass 1 research), `9e4cf38` corpus, `758f283` research update, `c20afea` implementation (`Fixes #6`), `9641b32` docs, `01f6119` this log; merged as `3027b5f`, gate re-run green on the merged tree, pushed. #6 closed as completed by the push; release and measurements commented on it.
+
+**Release:** `cargo semver-checks check-release` — 202 checks pass, no semver update required → patch. `f73e7d3` `release: v0.2.1`, published, tagged `v0.2.1`, `cargo info bevy_stigmergy@0.2.1` resolves from the registry: https://crates.io/crates/bevy_stigmergy/0.2.1. (`cargo-semver-checks` 0.51.0 installed into `~/.cargo/bin`; a first install attempt sat blocked for ~50 min behind other loops' cargo locks and stalled a gate run with it, so it was killed and rerun.)
+
+**Cleanup:** removed `~/s1p6_base` (worktree, 1.7 MB) and `~/s1p6_base-target` (2.0 GB), the stray `checklist` artifacts a mis-targeted build left in `~/target/stigmergy-loop/release` (the env sets `CARGO_TARGET_DIR` there), and `/tmp/s1` (1.3 GB on tmpfs: `/tmp` 2.4 GB → 1.1 GB used). `/home` reads 681 GB free before and after: other loops built through the pass. **Left, from pass 1:** `~/s1_base` (1.7 MB, detached at `5b47d37`, which is on `origin/main`; not clean — untracked `examples/bench.rs` and `tests/caller_thread_before.rs`; untouched for over 2 h) and `~/s1_base-target` (2.3 GB). Also left: branch `loop/iter-1` (local and origin) holding the parked WIP commit `fa78311`, now superseded by `loop/iter-1-pass6`.
 
 ### Ranked backlog
 
