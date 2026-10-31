@@ -40,6 +40,17 @@ the corpus yet; see the note that cites it.
   read.
 - `10.48550_arxiv.2205.10463` — *Glaberish: Generalizing the continuously-valued Lenia framework to
   arbitrary Life-like cellular automata* (2022). Not yet read.
+- `10.1016_j.pmcj.2015.04.003` — Barsocchi, Cimino, Ferro, Lazzeri, Palumbo & Vaglini 2015, *Monitoring
+  elderly behavior via indoor position-based stigmergy* (Pervasive and Mobile Computing). Marker-based
+  stigmergy whose marks are placed at the coordinates a positioning system reports, errors included
+  (modelled as bivariate Gaussian): a deposit's cell is a random variable with unbounded support. Multiple
+  deposits aggregate; marks disperse and evaporate.
+- `10.1007_s11721-019-00176-9` — Xu, Reina, Talamali, Haire, Bose & Marshall 2019, *Sophisticated
+  collective foraging with minimalist agents: a swarm robotics test* (Swarm Intelligence). Pheromone-trail
+  foraging with robots depositing along their path and avoiding walls. Intro read; not yet read in full.
+- `The Computational Beauty of Nature -- Anna's Archive` — Flake 1998, *The Computational Beauty of
+  Nature*: ants, cellular automata, diffusion-limited growth. Markdown exists; the embed failed on a Qdrant
+  timeout (2026-10-31), so `distill_search` cannot see it yet. Not yet read.
 
 ## Shipping games — influence maps, scent and trail systems
 
@@ -47,6 +58,8 @@ the corpus yet; see the note that cites it.
   ch. 29: placement, diffusion, breadcrumb decay, propagation cost.
 - `GameAIPro2_Chapter30_Modular_Tactical_Influence_Maps` — Mark, Game AI Pro 2 ch. 30: propagation
   falloff curves, layered maps.
+  Placement bounded to the square of the propagation radius (the cost fix this crate's `deposit_disc`
+  applies, clipped to the map as well).
 - `gameaipro4-ch06-flooding-influence-map-chase-dishonored-2` — Couvidou, *Flooding the Influence Map for
   Chase in Dishonored 2*: a heat flood bounded by walls, read as a value-weighted centroid.
 - `10.48550_arxiv.2210.04624` — *WebCrowds: An Authoring Tool for Crowd Simulation* (2022). A crowd
@@ -70,6 +83,11 @@ the corpus yet; see the note that cites it.
 - `book_real_time_collision_detection_ericson` — Ericson, *Real-Time Collision Detection*, IEEE-754
   section: NaN poisons arithmetic, `INF - INF` and `0 · INF` are NaN, and a range test written the
   obvious way lets a NaN through.
+  Also its integer-overflow section: test with compares before any arithmetic that could overflow (an AABB
+  test "cannot cause overflows to occur because AABB tests do not involve any arithmetic operations").
+- `book_fundamentals_computer_graphics_marschner` — Marschner & Shirley, *Fundamentals of Computer
+  Graphics*, §8.4.1 view volume culling: a primitive wholly outside the view volume "will produce no
+  fragments when rasterized", so it is dropped by a bounds test before any per-pixel work.
 - `PBR3_03_Shapes`, `PBR3_11_Volume_Scattering` — Pharr, Jakob & Humphreys, *Physically Based Rendering*
   3rd ed., ch. 3 and 11: NaNs asserted against in debug builds; `∞ × 0` avoided by clamping to the
   largest finite float.
