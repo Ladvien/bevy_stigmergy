@@ -12,6 +12,9 @@
 //! - **Query:** `gradient_cell_x10000` is one crowd's read of a one-channel field after 20 ticks: 10 000
 //!   `gradient_cell` calls at hashed agent cells (beside walls, on rock and just off the grid among
 //!   them), timed as one batch; its hash folds every returned slope.
+//! - **Placement:** `deposit_x1000` and `rally_deposit_x1000` are one tick's crowd, 1 000 deposits at
+//!   hashed cells (a margin of them off-grid), timed as one batch through `StigGrid::deposit` and
+//!   `RallyGrid::deposit`.
 //! - **Busy pool** (issue #6): a 175×175 two-channel tick from inside a Bevy `App` system whose
 //!   `ComputeTaskPool` has every other worker busy. What is timed is the caller's wall clock around the
 //!   call, so a call that parks shows as the stall it is; the line adds `max_us`, `parked_ticks` (ticks in
@@ -227,6 +230,50 @@ fn gradient(w: usize, h: usize) {
     line("gradient_cell_x10000", w, h, 1, "caller", us, hash);
 }
 
+/// The deposits one tick's crowd places: hashed cells over the grid and a one-cell margin around it.
+const DEPOSITS: u64 = 1_000;
+
+/// One batch of [`DEPOSITS`] placements, timed as one call; the tick between batches is not timed, it
+/// only keeps the field at a steady state. `rally_deposit_x1000` is the same through `RallyGrid`.
+fn deposits(w: usize, h: usize) {
+    let cells: Vec<IVec2> = (0..DEPOSITS)
+        .map(|k| {
+            let r = mix(k ^ 0xd3b0_0000);
+            IVec2::new((r % (w as u64 + 2)) as i32 - 1, ((r >> 32) % (h as u64 + 2)) as i32 - 1)
+        })
+        .collect();
+    let mut grid = StigGrid::<1>::new(w, h, floor(w, h).into_iter(), defs::<1>());
+    let mut us = Vec::with_capacity(measured_ticks());
+    for t in 0..WARMUP + measured_ticks() {
+        let start = Instant::now();
+        for (k, &c) in cells.iter().enumerate() {
+            grid.deposit(0, c, 1.0 + (k % 5) as f32);
+        }
+        let el = start.elapsed().as_secs_f64() * 1e6;
+        if t >= WARMUP {
+            us.push(el);
+        }
+        grid.evaporate_diffuse(0.1);
+    }
+    line("deposit_x1000", w, h, 1, "caller", us, grid_hash(&grid));
+
+    let mut grid = RallyGrid::new(w, h, floor(w, h).into_iter(), RallyDef::default());
+    let mut us = Vec::with_capacity(measured_ticks());
+    for t in 0..WARMUP + measured_ticks() {
+        let start = Instant::now();
+        for &c in &cells {
+            grid.deposit(c, Vec2::new(1.0, -0.5));
+        }
+        let el = start.elapsed().as_secs_f64() * 1e6;
+        if t >= WARMUP {
+            us.push(el);
+        }
+        grid.evaporate(0.1);
+    }
+    let hash = fnv(grid.cells().iter().flat_map(|v| [v.x.to_bits(), v.y.to_bits()]));
+    line("rally_deposit_x1000", w, h, 1, "caller", us, hash);
+}
+
 /// This thread's `(voluntary, involuntary)` context switches from Linux's `/proc/thread-self/status`;
 /// `None` elsewhere. A voluntary switch is the thread going to sleep — parking on a latch. An
 /// involuntary one is the OS preempting it, which a loaded host does to any thread.
@@ -377,6 +424,7 @@ fn main() {
         throughput_all::<8>(s, s);
         rally(s, s);
         gradient(s, s);
+        deposits(s, s);
     }
     busy_pool("busy_pool", tick::<2>);
     busy_pool("busy_pool_with_bevy", tick_bevy::<2>);

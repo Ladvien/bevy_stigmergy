@@ -3,7 +3,7 @@
 use bevy_math::{IVec2, Vec2};
 
 use crate::grid::{
-    FloorCell, IS_FLOOR, NB_NX, NB_NY, NB_PX, NB_PY, deposit_disc, floor_sets, in_grid, row_major,
+    FloorCell, IS_FLOOR, NB_NX, NB_NY, NB_PX, NB_PY, deposit_disc, deposited, floor_sets, in_grid, row_major,
 };
 
 /// Per-channel behaviour. The caller supplies one of these per channel, typically from its own config.
@@ -150,16 +150,25 @@ impl<const N: usize> StigGrid<N> {
     /// Add `amount` at `center`, smeared over the channel's `deposit_radius` with linear falloff. Only
     /// floor cells receive value, so deposits do not bleed into rock.
     ///
-    /// An undefined channel is a no-op: nothing is written, so every channel keeps the value it had.
+    /// A deposit is a finite quantity or it is nothing. An undefined channel is a no-op, and so is an
+    /// `amount` that is NaN or `±∞`: nothing is written, so every channel keeps the value it had. The
+    /// tick cannot remove a non-finite value once it is in a field, it spreads one cell a tick through
+    /// the connected floor, and [`hotspot_cell`](Self::hotspot_cell) and
+    /// [`saturation_stats`](Self::saturation_stats) skip it while [`sample_cell`](Self::sample_cell) and
+    /// [`gradient_cell`](Self::gradient_cell) return it. A finite `amount` that would take a cell past
+    /// `±f32::MAX / 16` (about `2.1e37`) stops there instead of overflowing to `∞`.
     pub fn deposit(&mut self, channel: usize, center: IVec2, amount: f32) {
         let (Some(def), Some(grid)) = (self.defs.get(channel), self.channels.get_mut(channel)) else {
             return;
         };
+        if !amount.is_finite() {
+            return;
+        }
         let (w, h) = (self.width, self.height);
         let radius = def.deposit_radius;
         let flags = &self.cell_flags;
         deposit_disc(w, h, flags, center, radius, |i, falloff| {
-            grid[i] += amount * falloff;
+            grid[i] = deposited(grid[i], amount * falloff);
         });
     }
 

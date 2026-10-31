@@ -519,4 +519,80 @@ mod tests {
         let r = RallyGrid::new(2, 2, all_floor(2, 2), RallyDef::default());
         assert_eq!(r.sample_cell(IVec2::new(-1, -1)), Vec2::ZERO);
     }
+
+    // ---- Issue #9: a deposit that is not a finite number must not reach the field. ----
+
+    #[test]
+    fn a_non_finite_deposit_leaves_the_field_finite() {
+        let defs = [ChannelDef { evaporate: 0.1, diffuse: 0.25, deposit_radius: 2.0 }];
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut g = StigGrid::<1>::new(8, 8, all_floor(8, 8), defs);
+            g.deposit(0, IVec2::new(2, 2), 1.0);
+            let before = g.channels().clone();
+            g.deposit(0, IVec2::new(5, 5), bad);
+            assert_eq!(g.channels(), &before, "{bad}: a refused deposit writes nothing");
+            for _ in 0..20 {
+                g.evaporate_diffuse(0.1);
+            }
+            assert!(g.channels()[0].iter().all(|v| v.is_finite()), "{bad} poisoned the channel");
+            assert!(g.gradient_cell(0, IVec2::new(3, 3)).is_finite());
+            assert!(g.sample_cell(0, IVec2::new(2, 2)) > 0.0, "the real deposit survives");
+        }
+        let mut r = RallyGrid::new(8, 8, all_floor(8, 8), RallyDef::default());
+        r.deposit(IVec2::new(4, 4), Vec2::X);
+        let before = r.cells().to_vec();
+        for bad in [
+            Vec2::new(f32::NAN, 1.0),
+            Vec2::new(1.0, f32::NAN),
+            Vec2::new(f32::INFINITY, 0.0),
+            Vec2::new(0.0, f32::NEG_INFINITY),
+        ] {
+            r.deposit(IVec2::new(4, 4), bad);
+            assert_eq!(r.cells(), &before[..], "{bad}: a refused deposit writes nothing");
+        }
+        r.evaporate(0.1);
+        assert!(r.cells().iter().all(|v| v.is_finite()));
+        assert!(r.sample_cell(IVec2::new(4, 4)).x > 0.0, "the real deposit survives");
+    }
+
+    #[test]
+    fn a_deposit_stops_at_the_limit_instead_of_overflowing_to_infinity() {
+        let limit = f32::MAX / 16.0;
+        let defs = [ChannelDef { evaporate: 0.0, diffuse: 1.0, deposit_radius: 0.0 }];
+        let mut g = StigGrid::<1>::new(6, 6, all_floor(6, 6), defs);
+        // Every cell takes two of the largest finite deposits, of each sign in turn.
+        for sign in [1.0, -1.0] {
+            for c in all_floor(6, 6) {
+                g.deposit(0, c, sign * f32::MAX);
+                g.deposit(0, c, sign * f32::MAX);
+            }
+            assert!(g.channels()[0].iter().all(|&v| v == sign * limit), "pinned at {sign} * limit");
+            // The tick must carry a field this full: four neighbours summed would pass `f32::MAX` if the
+            // limit were any higher.
+            for _ in 0..200 {
+                g.evaporate_diffuse(1.0);
+            }
+            assert!(g.channels()[0].iter().all(|v| v.is_finite()), "the tick overflowed at {sign} * limit");
+            assert!(g.gradient_cell(0, IVec2::new(3, 3)).is_finite());
+            g.set_channel(0, &[0.0; 36]);
+        }
+
+        let def = RallyDef { decay: 0.0, accumulate: 1.0, deposit_radius: 0.0 };
+        let mut r = RallyGrid::new(4, 4, all_floor(4, 4), def);
+        for _ in 0..3 {
+            r.deposit(IVec2::new(1, 1), Vec2::new(f32::MAX, -f32::MAX));
+        }
+        assert_eq!(r.sample_cell(IVec2::new(1, 1)), Vec2::new(limit, -limit));
+    }
+
+    #[test]
+    fn a_rally_whose_accumulate_is_not_finite_deposits_nothing() {
+        // `∞ · 0` is NaN at the rim of a whole-number radius, where the falloff is 0.
+        for accumulate in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let def = RallyDef { decay: 0.3, accumulate, deposit_radius: 2.0 };
+            let mut r = RallyGrid::new(8, 8, all_floor(8, 8), def);
+            r.deposit(IVec2::new(4, 4), Vec2::X);
+            assert!(r.cells().iter().all(|&v| v == Vec2::ZERO), "{accumulate}: nothing written");
+        }
+    }
 }
