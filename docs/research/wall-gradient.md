@@ -163,34 +163,63 @@ what a wall is: a face nothing crosses, not a cold cell.
 
 ## Measured in iteration 3
 
-Harness `/tmp/s3/checklist.rs` (scratch), same map (64×48, 2 749 floor cells), `cb5ebd4` against the branch.
-Its counts differ a little from the ones above (a different agent rule and fleeing-face definition); these
-are the numbers the log quotes.
+Harness `/tmp/s3/chk` (scratch, built in release with overflow checks), the same map (64×48, 2 749 floor
+cells, a wall at `x = 32` with one gap, ~9% scattered rock), `cb5ebd4` against the branch. The scratch
+harness an earlier pass used for the first version of this table is gone and its agent rule differed, so
+every number below was measured again by the pass that gated the work; the table in "The defect, measured"
+is that earlier pass's and is kept as history.
 
 | Target | Before | After |
 |---|---|---|
 | uniform field, floor cells with a slope | 1 240 of 2 749 (max 1.414) | 0 |
-| ramp `2x + y`: interior cells reading `(4, 2)`; boundary cells with a downhill component | 1 479 of 1 479; 635 of 1 270 | 1 479 of 1 479; 0 |
-| field flat along one axis: cells with a slope across it | 658 and 630 | 0 and 0 |
+| ramp `2x + y`: interior cells reading `(4, 2)`; boundary cells (1 270) with a downhill component | 1 479 of 1 479; 635 | 1 479 of 1 479; 0 |
+| field flat along one axis: cells with a slope across it (`sin y`, `cos x`) | 658, 630 | 0, 0 |
 | fleeing points into a wall face the field is flat across | 686 of 1 362 faces | 0 |
-| random field: axes with two floor neighbours (4 167), four-neighbour cells (1 479), bit hashes | `a9fdeab01ccdeb7c`, `021a50d60f690860` | equal |
-| 200 agents climbing a settled source, 400 steps: mean geodesic distance 37.2 →; within 3 cells | 12.6; 80 of 200 | 0.5; 200 of 200 |
-| 200 agents fleeing: mean distance →; stranded short of a local distance maximum | 49.8; 52 | 51.8; 14 |
-| bench `determinism`, 30 lines (caller, Bevy 16, rayon 1, 2, 24) | `a446265d6a95cf51` | `a446265d6a95cf51` |
-| `gradient_cell_x10000`, median of 3 interleaved rounds, 64² / 256² / 1024² | 54.0 / 69.8 / 95.1 µs | 47.7 / 59.1 / 79.2 µs (0.88× / 0.85× / 0.83×) |
+| random field, bit hashes: 1 479 four-neighbour cells; 2 061 x axes and 2 106 y axes with two floor neighbours | `a5ac09949ebc8eb6`; `885728d5c4e636c4`, `231a19e5b1077626` | equal |
+| 200 agents, 400 steps, greedy axis step, **source settled by the tick** (8 000 ticks, evaporation 5e-4): climbing, mean geodesic distance from 51.9; within 3 cells of the source | 40.2; 20 of 200 | 0.5; 200 of 200 |
+| the same, fleeing: mean distance (the farthest floor cell is 91); at rest with a farther floor cell beside them | 66.2; 67 of 200 | 74.1; 9 of 200 |
+| the same on `exp(−geodesic/25)`, climbing: mean distance; within 3 cells; at rest short of the source | 50.2; 0; 1 | 4.4; 182; 18 |
+| the same, fleeing: mean distance; at rest with a farther floor cell beside them | 63.1; 76 | 65.2; 39 |
+| rock cell, off-grid, `IVec2::MAX`/`MIN`, `i32::MAX` on one axis, undefined channel | `IVec2::MAX` panics (add overflow); the rest 0 | all `Vec2::ZERO`, no panic |
+| bench `determinism`, 30 lines over 6 runs a side (caller, Bevy 6, rayon 1, 2, 14) | `a446265d6a95cf51` | `a446265d6a95cf51` |
+| every throughput hash of the bench, before and after | — | equal (only `gradient_cell_x10000`'s differ, by design) |
 
-**Cost.** The first version (a `bool` mask, four floor-mask loads per query beside the cell's own) was
-0.73× at 64² but 1.06–1.13× at 256² and 1.00–1.15× at 1 024² against the old query: more loads and
-data-dependent branches on the rock pattern. A branchless form (`get` + select) was 1.3–1.8× *slower*. The
-version shipped keeps one flag byte per cell (floor, and which of its four neighbours are floor, the bits
-the tick's `FloorCell` already carried), replacing the `bool` mask in both grids: one load answers every
-wall question, and the query is faster than before at every size. Results are bit-identical to the first
-version.
+The 18 climbers and 39 fleers at rest on the exact field are the agent rule and exact ties, not the query. The
+four climbers inspected (cells (21, 43), (46, 24), (23, 11), (35, 38)) each stand beside a wall, the floor
+neighbour away from the wall lower and the two along-wall neighbours at exactly equal geodesic distance, so
+`exp(−d/25)` ties them: the along-wall component is exactly 0 and the across-wall one, the real one-sided slope,
+points at the wall. A field the tick made has no such ties and strands none of the climbers (0 of 200).
 
-**`foraging`.** Stills at steps 900, 1 800, 2 700 and 3 600 (1/60 s each) from the old and new query show
-the same route through the left gap, forming by step 900 and holding to 3 600. The "slide along the wall to
-the gap" above does not show here: the gap sits straight between the nest and the food, so foragers seldom
-touch a wall. The README's picture still describes the example and was not regenerated.
+**Cost.** `/tmp/s3/ab` runs the old crate (renamed `bevy_stigmergy_old`) and the new one in one process,
+alternating batch by batch, so macOS's P/E core placement (the bench binary alone reads 10 µs or 26 µs for
+the same 64² one-channel tick, from run to run, on both builds) and load hit both sides alike. Three runs of
+600 batches:
+
+| Case | New / old, median | New / old, p10 | p90 old → new |
+|---|---|---|---|
+| `gradient_cell` × 10 000 at hashed cells (bench scenario), 64² / 256² / 1 024² | 0.81–0.86 / 0.80 / 0.93–0.95 | 0.67–0.80 / 0.80–0.81 / 0.86–0.92 | 64²: 142–148 → 163–167 µs; 256²: 147–153 → 133–142; 1 024²: 346–403 → 326–375 |
+| the same on cells inside the grid only | 0.81–0.92 / 0.81–0.82 / 0.91–0.93 | 0.77–0.85 / 0.81–0.82 / 0.89–0.91 | — |
+| `deposit` × 1 000, radius 1.5, 64² / 256² / 1 024² | 0.955–1.007 / 0.983–1.007 / 0.996–1.004 | 0.99–1.01 | — |
+| inline tick, 4 channels, 64² / 256² (code not touched: the control) | 0.999–1.000 / 0.985–1.012 | 1.000–1.001 / 0.992–1.038 | — |
+
+The query is faster at every size at the median and the 10th percentile. At 64² its 90th percentile is 13–15%
+slower (a wider spread: the p10 is 20–33% faster), a tail the median does not show, and it is logged as the
+one place the new read is not better. The first version (a `bool` mask, four floor-mask loads per query beside the cell's
+own) was, by an earlier pass's measurement that was not repeated here, 1.06–1.15× slower than the old query at
+256² and 1 024²: more loads and data-dependent branches on the rock pattern. The version shipped keeps one
+flag byte per cell (floor, and which of its four neighbours are floor, the bits the tick's `FloorCell` already
+carried), replacing the `bool` mask in both grids: one load answers every wall question.
+
+**`foraging`.** The example now runs on its own step count, so two builds can be compared frame for frame.
+Stills at steps 900, 1 800, 2 700 and 3 600 from `cb5ebd4`'s query and the new one were captured
+(`/tmp/s3/shots`) and the first and last pair read. At 900 the two frames show the same thing: one bright trail
+through the left gap, a dead-end spur at the right gap, and a wandering mesh on the far side of the wall. At
+3 600 both keep the left route, the old frame with the
+foragers pale (searching) in the lower half of the trail and the new one with them amber (carrying) in the
+upper half, a different phase of the same cycle. The routes agree; individual foragers diverge after the first
+step the query differs, as expected of a chaotic system. The "slide along the wall to the gap" above does not
+show here: the gap sits straight between the nest and the food, so foragers seldom touch a wall. The README's
+picture still describes the example and was not regenerated.
 
 ## Pending index
 
@@ -204,3 +233,6 @@ touch a wall. The README's picture still describes the example and was not regen
   nothing in this crate's domains (one false hit on "diffusion": a mesh-generation model). Quotes from
   `10.1039_a702602a`, Lewis ch. 29 and Couvidou ch. 6 re-checked against `markdown_read`; Harris's two
   quotes are on page 678 of the GPU Gems stem (not 677 or 679).
+- Gating pass of iteration 3: distill and both scribes healthy (`system_status`, 18 070 embedded);
+  `catalog_recent` (200) held only psychology, plant-biology and language-model embeds, nothing for the
+  corpus. No source is pending.
