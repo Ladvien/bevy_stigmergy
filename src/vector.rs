@@ -2,7 +2,7 @@
 
 use bevy_math::{IVec2, Vec2};
 
-use crate::grid::{FloorCell, deposit_disc, floor_sets, in_grid, row_major};
+use crate::grid::{FloorCell, deposit_disc, deposited, floor_sets, in_grid, row_major};
 
 /// Tuning for the vectorial pheromone (mirrors [`crate::ChannelDef`], but for the vector store).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -76,14 +76,24 @@ impl RallyGrid {
 
     /// Accumulate a deposited intermediate-vector `s` (Tang's `c_a·s` term), smeared over
     /// `deposit_radius` with linear falloff. Only floor cells receive value.
+    ///
+    /// A vector with a NaN or infinite component is not a deposit and is a no-op: nothing is written.
+    /// [`evaporate`](Self::evaporate) only multiplies, so it could never remove one. (Tang's own
+    /// intermediate-vector divides by the step length, so a robot that has not moved produces `0/0`.) A
+    /// finite `s` that would take a component of a cell past `±f32::MAX / 16` (about `2.1e37`) stops
+    /// there instead of overflowing to `∞`.
     pub fn deposit(&mut self, center: IVec2, s: Vec2) {
+        if !s.is_finite() {
+            return;
+        }
         let (w, h) = (self.width, self.height);
         let accumulate = self.accumulate;
         let radius = self.deposit_radius;
         let flags = &self.cell_flags;
         let grid = &mut self.grid;
         deposit_disc(w, h, flags, center, radius, |i, falloff| {
-            grid[i] += s * (accumulate * falloff);
+            let add = s * (accumulate * falloff);
+            grid[i] = Vec2::new(deposited(grid[i].x, add.x), deposited(grid[i].y, add.y));
         });
     }
 

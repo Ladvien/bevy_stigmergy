@@ -129,3 +129,18 @@ pub(crate) fn deposit_disc(
         }
     }
 }
+
+/// The most a deposit leaves in a cell, in either sign: `f32::MAX / 16`, about `2.13e37`.
+///
+/// The tick sums four neighbours, so a cell holding more than `f32::MAX / 4` can overflow to `∞` there
+/// and then to NaN; `/ 16` leaves a factor of four for the rounding in the blend. It is far above any
+/// value a game stores, so a deposit below it is bit-for-bit what `cell + delta` is.
+pub(crate) const VALUE_LIMIT: f32 = f32::MAX / 16.0;
+
+/// `cell + delta`, held to `±`[`VALUE_LIMIT`]: what a deposit writes, so two finite deposits can never
+/// add up to `∞`. The identity for every sum inside the limit. A NaN stays NaN (`clamp` keeps it),
+/// which is what a NaN in a caller's def has always done, not a value this function invents.
+#[inline]
+pub(crate) fn deposited(cell: f32, delta: f32) -> f32 {
+    (cell + delta).clamp(-VALUE_LIMIT, VALUE_LIMIT)
+}
