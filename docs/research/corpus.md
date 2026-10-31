@@ -22,6 +22,16 @@ the corpus yet; see the note that cites it.
   (In distill, no catalog row.)
 - `10.3133_tm6a55` — Langevin et al. 2017, *Documentation for the MODFLOW 6 Groundwater Flow Model* (USGS
   TM 6-A55). Control-volume diffusion: one conductance per cell pair, no-flow inactive cells.
+- `10.1016_j.robot.2019.103251` — Tang, Xu, Yu, Zhang & Zhang 2019, *Dynamic target searching and tracking
+  with swarm robots based on stigmergy* (Robotics & Autonomous Systems). The vectorial pheromone
+  `RallyGrid` implements: deposits are intermediate-vectors accumulated by addition, each divided by the
+  robot's step.
+- `10.1109_jas.2021.1004129` — Tang, Liu & Pan 2021, *A Review on Representative Swarm Intelligence
+  Algorithms for Solving Optimization Problems* (IEEE/CAA J. Autom. Sinica). The ant-colony update
+  `τ = (1 − ρ)τ + Σ Δτ^k`: pheromone as a sum of released quantities.
+- `10.1016/s0167-739x(00)00043-1` *(abstract)* — Stützle & Hoos 2000, *MAX-MIN Ant System* (Future
+  Generation Computer Systems): pheromone trails bounded to `[τ_min, τ_max]`. Not in the corpus yet; see
+  `non-finite-deposit.md`.
 - `10.1039_a702602a` — Maini, Painter & Chau 1997, *Spatial pattern formation in chemical and biological
   systems* (J. Chem. Soc., Faraday Trans.). Reaction-diffusion with zero-flux (impermeable) boundaries.
 - `10.48550_arxiv.2212.07906` — *Flow-Lenia: Towards open-ended evolution in cellular automata through
@@ -57,3 +67,9 @@ the corpus yet; see the note that cites it.
   arbitrary solid boundaries, pure Neumann walls.
 - `10.48550_arXiv.1312.3300` — Revol & Théveny 2014, *Numerical Reproducibility and Parallel
   Computations: Issues for Interval Algorithms*: float non-associativity as the cause of irreproducibility.
+- `book_real_time_collision_detection_ericson` — Ericson, *Real-Time Collision Detection*, IEEE-754
+  section: NaN poisons arithmetic, `INF - INF` and `0 · INF` are NaN, and a range test written the
+  obvious way lets a NaN through.
+- `PBR3_03_Shapes`, `PBR3_11_Volume_Scattering` — Pharr, Jakob & Humphreys, *Physically Based Rendering*
+  3rd ed., ch. 3 and 11: NaNs asserted against in debug builds; `∞ × 0` avoided by clamping to the
+  largest finite float.

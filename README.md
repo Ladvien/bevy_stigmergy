@@ -92,10 +92,11 @@ field.evaporate_diffuse_with(dt, pool.thread_num(), |chunks| {
 
 Both are off by default, and neither adds a type to the dependency graph a consumer did not ask for.
 
-## Two gotchas worth knowing
+## Three gotchas worth knowing
 
 - **A deposit masks its destination, not its path.** The kernel is a Euclidean disc that skips non-floor cells — not a flood fill and not a line-of-sight test — so a radius wide enough to span a wall still reaches the floor beyond it. That is deliberate (a smell or a sound goes round a corner). *Diffusion* is the pass that respects walls.
 - **Deposits accumulate with a non-associative `+=`.** If you produce them from an unordered source (an ECS query, a hash map), sort the batch before submitting or your field is not reproducible. This crate never sees the batch, only individual deposits, so it cannot do it for you.
+- **A deposit is a finite number or it is nothing.** A NaN or infinite `amount` — a `1.0 / d` with `d` zero, say — is refused and writes nothing, the way an undefined channel is, and `RallyGrid::deposit` does the same for a vector with such a component. The tick cannot remove a non-finite value once it is in a channel (it spreads one cell a tick through the connected floor), and `hotspot_cell` and `saturation_stats` skip a NaN while `sample_cell` and `gradient_cell` return it, so a poisoned field reads as healthy in the one place you would look. A finite deposit stops at `±f32::MAX / 16` (about `2·10³⁷`) instead of overflowing to `∞`.
 
 ## Determinism
 
