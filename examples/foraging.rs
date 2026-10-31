@@ -322,7 +322,7 @@ fn capture(
     }
     let step = frame.0;
     if let Some(prefix) = &capture.shot {
-        let periodic = capture.every > 0 && step % capture.every == 0;
+        let periodic = capture.every > 0 && step.is_multiple_of(capture.every);
         if (periodic || step == capture.frames) && step != *last_shot {
             *last_shot = step;
             commands
