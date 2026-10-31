@@ -138,3 +138,68 @@ Pass 6 of the driver (passes 2–5 failed at start-up with no model login; pass 
 5. A cost that scales with live cells, not the whole grid, for large mostly-empty maps; then capture knobs (`STIG_FRAMES`, `STIG_SHOT`) and a fresh `docs/foraging.gif`.
 
 **Merged and cleaned up (iteration 2).** Merged as `3c8c608`. The gate was re-run green on the merged tree before `main` was pushed. #7 closed as completed when the push landed, and the results are in a comment on it. Removed: `~/s2_base` (worktree, 1.8 MB) and `~/s2_base-target` (2.3 GB). `/home` free space went from 670 GB to 671 GB, while other loops kept building. Also removed `/tmp/s2` (350 MB on tmpfs: `/tmp` used 1.9 GB → 1.6 GB). **Left from pass 1, as listed before:** `~/s1_base` (1.7 MB) and `~/s1_base-target` (2.3 GB). That worktree is detached at `5b47d37`, which is on `origin/main`. It is not clean (untracked `examples/bench.rs` and `tests/caller_thread_before.rs`) and has been untouched for over 2 h. Branch `loop/iter-1`, which holds parked WIP `fa78311`, is also still in place.
+
+## Iteration 3 — 2026-10-30 — gradient_cell reads a wall as the cell's own value (#8)
+
+The gating pass of an iteration that was cut off. An earlier pass had built the whole fix on `origin/loop/iter-3` (four commits: research, implementation, flag-byte rework, capture knob and docs), but it never reached its gate, its log entry or `main`. **Adopted by checking that branch out and finishing it** (`loop/iter-3` tracking `origin/loop/iter-3`, from `5705947`); the two parked branches (`wiggum/parked-pass-8-*`, whose research and bench draft were already adopted into it, and `wiggum/parked-pass-19-*`, a checkpoint of `src/scalar.rs` and `examples/bench.rs` that the branch's later commits supersede) are left in place and not merged.
+
+**Triage.** Open issues: **#8** (`bug`, `assumed-decision`), **#9** (`bug`), **#10** (`bug`). #8 is the item: the oldest bug, and its implementation already existed. **Skipped, with reasons:** #9 (a NaN or ∞ deposit poisons a channel) and #10 (`deposit` overflows an `i32` on an extreme cell) are bugs of the same rank that cost one item each; they head the backlog below. #10's `gradient_cell` half is closed by this change (checked: `IVec2::MAX` panicked with an add overflow before, reads `Vec2::ZERO` now); its `deposit` half is untouched, so #10 stays open. No `consumer` or enhancement issue was open. Corpus re-scan: `catalog_recent` (200) held only psychology, plant-biology and language-model embeds; nothing to add.
+
+**What changed and why it ranked first.** A rock or off-grid neighbour read as `0.0`, so beside every wall a flat field reported a slope pointing away from it and a fleeing agent was pulled into the nearest wall. The runner-up, #9, only fires on a host bug; #8 fires on every map with a wall.
+
+- `gradient_cell` reads a neighbour that is not floor as the cell's own value (Harris's Neumann boundary value; the face the tick has had since #7): a flat field has no slope, across a wall the component is the one-sided difference from the floor side, a cell with four floor neighbours and the component along a wall are unchanged to the bit.
+- A rock or off-grid cell, however far, and an undefined channel read `Vec2::ZERO`; the cell is tested before any neighbour is formed, so a saturated `CellFrame::world_to_cell` no longer overflows (#10's gradient half).
+- Both grids keep one flag byte per cell (`IS_FLOOR | NB_*`, the bits `FloorCell` already carried) in place of the `bool` mask: the query is one load for its walls.
+- `examples/foraging.rs` gets the capture knob (`STIG_FRAMES`, `STIG_SHOT`, `STIG_EVERY`) and runs on its own step count, so two builds can be compared frame for frame; `examples/bench.rs` gets `gradient_cell_x10000`.
+- Four permanent tests in `src/lib.rs`; all four fail on `cb5ebd4` (checked by running them against its sources: 30 passed, 4 failed) and pass here.
+- **Found and fixed by this pass:** the adopted tree failed `cargo clippy --all-targets --all-features -- -D warnings` (`manual_is_multiple_of`, `examples/foraging.rs:325`), `ad586ec`.
+- Assumed decision (owner may override), already on #8 with label `assumed-decision`: a wall reads as the cell's own value; a rock or off-grid cell reads `Vec2::ZERO`; one flag byte per cell.
+
+**Sources.** Model: `10.1039_a702602a` (Maini, Painter & Chau 1997: zero-flux boundaries), `10.3133_tm6a55` (MODFLOW 6: no-flow cells). Shipping game: `gameaipro4-ch06-flooding-influence-map-chase-dishonored-2` (Couvidou: the extrapolated direction that ran into the nearest wall), `GameAIPro2_Chapter29_Escaping_the_Grid_Infinite-Resolution_Influence_Mapping` (Lewis: influence bounces off an obstacle, it does not vanish into it). Technical: GPU Gems ch. 38 (Harris, `GPU Gems- Programming Techniques, Tips and Tricks for -- Randima Fernando; …`, page 678: "set each pressure boundary value to the value just inside the boundary"). Note: `docs/research/wall-gradient.md`; corpus adds Maini et al. plus three Lenia/CA stems and WebCrowds (not yet read).
+
+**home-still.** `system_status`: distill healthy (`bge-m3`, 18 070 embedded, 488 794 chunks); scribe: big (`192.168.1.110`) healthy, 3 converting, 9 of 12 slots free; bmb healthy, 5 converting, 1 of 6 free; 870 queued. Nothing pending index.
+
+**Field checklist** (`/tmp/s3/findings.md`; before = `cb5ebd4`, after = this branch; the tick is untouched, so every line not about the query is identical):
+
+| Check | Before | After |
+|---|---|---|
+| conservation, evap 0, 1000 ticks: open / walled+gap / sealed | −1.4e-8 / −1.0e-7 / −6.0e-8 | same |
+| rock max; decay vs `(0.9)^20` | 0; rel 0 | same |
+| soak, 10 000 ticks × 16 deposits (91 905 off-grid or undefined channel) | 0 non-finite, 0 negative | same |
+| uniform field, one tick: floor cells with a slope (of 2 749) | 1 240, max 1.414 | **0** |
+| ramp `2x + y`: interior reading `(4, 2)`; boundary cells with a downhill component (of 1 270) | 1 479 / 1 479; 635 | 1 479 / 1 479; **0** |
+| field flat along one axis: cells with a slope across it; fleeing points into a flat wall face | 658 and 630; 686 of 1 362 | **0 and 0; 0** |
+| random field bit hashes: 1 479 four-neighbour cells, 2 061 x axes, 2 106 y axes | `a5ac…eb6`, `8857…6c4`, `231a…626` | equal |
+| 200 agents, 400 steps, source settled by the tick: climbers within 3 cells (mean geodesic distance from 51.9) | 20 (40.2) | **200 (0.5)** |
+| the same, fleeing: at rest with a farther floor cell beside them (mean distance, farthest cell 91) | 67 (66.2) | **9 (74.1)** |
+| exact field `exp(−d/25)`: climbers within 3 cells; fleeing at rest short | 0; 76 | 182; 39 |
+| `IVec2::MAX`, `i32::MAX` on one axis, rock, off-grid, undefined channel | `IVec2::MAX` panics (add overflow) | all `Vec2::ZERO` |
+| bench `determinism`, 6 runs × 2 sides × 5 lines | `a446265d6a95cf51` | `a446265d6a95cf51`; every throughput hash equal except `gradient_cell_x10000`'s (new slopes, by design) |
+
+**Bench.** The bench binary alone cannot gate 5% on this host: it is a macOS arm64 machine at load 5–13 on 14 cores, and one process reads the same 64² one-channel tick at 10 µs or 26 µs depending on the core (P or E) it lands on, on both builds (`/tmp/s3/before|after/bench-r1..6.txt`: median of six, 64² ch1 inline 10.7 → 25.8, an artifact: the tick is untouched). `busy_pool` medians: 663.2 → 663.8 µs; its `parked_ticks` is Linux-only (`n/a`). So the gate was decided by an **in-process, interleaved A/B** of the old crate (renamed) and the new one (`/tmp/s3/ab`, three runs of 600 batches):
+
+| Case | New / old, median | p10 |
+|---|---|---|
+| `gradient_cell` × 10 000, 64² / 256² / 1 024² | 0.81–0.86 / 0.80 / 0.93–0.95 | 0.67–0.80 / 0.80–0.81 / 0.86–0.92 |
+| `deposit` × 1 000, 64² / 256² / 1 024² | 0.955–1.007 / 0.983–1.007 / 0.996–1.004 | 0.99–1.01 |
+| inline tick ch4, 64² / 256² (control: code untouched) | 0.999–1.000 / 0.985–1.012 | 1.000–1.001 / 0.992–1.038 |
+
+One regression, logged: at 64² the query's p90 is 13–15% slower (142–148 → 163–167 µs) while its median is 14–19% faster.
+
+**Critique and verdict** (`/tmp/s3/critique.md`): **GREAT** for `gradient_cell` at walls and for the capture knob. Flaws kept: across a wall the component is half a ramp's open-floor scale (a Deviation, documented); a climber beside a wall with a lower floor-side neighbour and tied along-wall neighbours reads a gradient into the wall and no along-wall component (18 of 200 on the exact tie-ridden field, 0 of 200 on a field the tick made; sliding is the agent's rule, not the query's); the 64² p90 above; `parked_ticks` cannot be read on this host; `tests/leaf.rs` still says the crate takes `rayon` (protected). **Stills** (`/tmp/s3/shots`, `cb5ebd4`'s query against the new one, steps 900 and 3 600 read, 1 800 and 2 700 captured): the same route through the left gap, the same dead-end spur at the right gap and wandering mesh beyond the wall at 900; at 3 600 both hold the left route, in different phases of the cycle. `docs/foraging.gif` not regenerated: the route is unchanged and its caption describes what the file shows.
+
+**Gate:** build, build all-features, release, test, test all-features (34 unit tests, 4 caller-thread, 2 leaf, 1 doctest), examples, clippy `-D warnings`, rustdoc `-D warnings`, fmt, wasm32 — all green on `5b42dc7` (clippy red on `5705947`, fixed in `ad586ec`).
+
+**Environment trouble, for the next pass.** The disk filled during the pass (`write() failed, errno=28` linking `foraging`; 209 MB free): two Bevy builds at once took 66–70 minutes each at load 11 and `~/target/stigmergy-loop` is 49 GB. Building a second worktree **into the same `CARGO_TARGET_DIR`** makes cargo treat the first tree's library as fresh (same package id, older mtimes): the baseline's `foraging` binary was byte-identical to the branch's until every `src/*.rs` was touched. Give a baseline its own target directory, or `touch` the tree before building it.
+
+**Commits:** `a7eb6a0` corpus, `9a8133b` research, `9c42e62` implementation (`Fixes #8`), `4c1550d` flag byte, `3e1417b` capture knob, `5705947` docs (all by the earlier pass); `ad586ec` clippy fix, `5b42dc7` measured numbers (this pass), then this log.
+
+**Release: not done.** More than six hours have passed since `v0.2.1` (14:11), and `src/**` changed, so one is due, but this host cannot publish: there is no `~/.cargo/credentials*` and no `CARGO_REGISTRY_TOKEN`, and `cargo-semver-checks` is not installed (a build of it on a disk with 1.8 GB free would risk the next ENOSPC). The change adds no public item and removes none, so it would be a patch (0.2.2) carrying #7 and #8; both stay under `## [Unreleased]`. `cargo publish --dry-run` is below.
+
+### Ranked backlog
+
+1. **#9 (bug)**: `StigGrid::deposit` and `RallyGrid::deposit` write a NaN or ±∞ `amount` unchecked and diffusion spreads it over the whole channel forever (`set_channel` already refuses non-finite values). Refuse non-finite deposits, the same way an undefined channel is a no-op.
+2. **#10 (bug, deposit half)**: `deposit`/`deposit_disc` form `center + offset` in `i32` and walk an unclamped (2r+1)² box: overflow on an extreme cell in a debug build, and a huge radius walks off-grid cells. Clamp the box to the grid before the loop.
+3. **Bug, not filed:** a `ChannelDef` with `diffuse` outside `[0, 1]` or NaN, or a NaN `evaporate`, is used as given. Decide clamp vs. refuse at `StigGrid::new`.
+4. One `run` call per tick for every diffusing channel (one scope instead of N); then a cost that scales with live cells, not the whole grid, for large mostly-empty maps.
+5. Bench hygiene: a P-core pin or a long single-core warm-up so macOS runs are comparable (and `parked_ticks` on a Linux host); a regenerated `docs/foraging.gif` from the capture knob when the behaviour next moves.
