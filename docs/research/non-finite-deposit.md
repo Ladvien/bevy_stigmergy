@@ -127,17 +127,27 @@ range that holds is the identity, so every in-range deposit is bit-identical to 
 documented number in the two `deposit` docs, not a public constant: a caller's own sentinel is a
 finite number it chose, and "stops at about 2 × 10³⁷" is all it needs to know.
 
-**Out of scope, recorded.** `set_channel` takes finite values up to `f32::MAX` as given, and a def with a
-NaN `evaporate`, `diffuse` or `accumulate` poisons by a different door; both are in the backlog, not here.
-Issue #10 (an `i32` overflow in the disc walk) shares `deposit_disc` and is a different failure.
+**The clamp is `max(-L).min(L)`, not `clamp`, and the rally refuses a non-finite gain.** Measured in
+iteration 4 on a 64² field (1 000 deposits, old and new interleaved in one process): `f32::clamp` costs
+3–4.5% on a scalar deposit and up to 9% on a rally one, `max` then `min` (one instruction each on the
+host's NEON and on x86's `maxss`/`minss`) 2–3% and 0–1%. They differ only on NaN, where `max`/`min` return the
+other operand: a NaN `delta` would write `-L`. So the rally deposit also refuses a deposit while its
+`accumulate` is not finite (`∞ × 0` at a rim of falloff 0 is NaN), which makes a NaN `delta` unreachable;
+the scalar `delta = amount × falloff` of a finite `amount` already is. A NaN *cell* could come only from
+a NaN `evaporate` or `diffuse` in a caller's def, and would read as `-L` after a deposit instead of NaN.
+
+**Out of scope, recorded.** `set_channel` takes finite values up to `f32::MAX` as given, and a def with
+a NaN `evaporate` or `diffuse`, or a `diffuse` above 1, poisons by a different door; both are in the
+backlog, not here. Issue #10 (an `i32` overflow in the disc walk) shares `deposit_disc` and is a different
+failure.
 
 ## Parameters
 
 | Name | Value | Basis |
 |---|---|---|
-| refused amounts | NaN, `+∞`, `−∞` (scalar); a vector with any such component (rally) | `is_finite()`; design default, matches `set_channel` |
+| refused amounts | NaN, `+∞`, `−∞` (scalar); a vector with any such component, or a non-finite `accumulate` (rally) | `is_finite()`; design default, matches `set_channel` |
 | `VALUE_LIMIT` | `f32::MAX / 16` | `4 L ≤ f32::MAX` for the four-neighbour sum, ×4 margin; design default |
-| clamp | after the add, per component for the rally vector | identity on every in-range value |
+| clamp | `max(-L).min(L)` after the add, per component for the rally vector | identity on every in-range value; measured cheaper than `clamp` |
 | `set_channel`, defs | unchanged | not what #9 reports |
 
 ## Validation targets
@@ -161,8 +171,8 @@ A bad deposit leaves no trace: the field, the hotspot, the gradient and the exam
 would have without the call, and the host learns of its bug from its own data, not from agents that
 walk into a NaN. The two kinds of reader agree: where `sample_cell` can return NaN, `hotspot_cell` and
 `saturation_stats` must not report a healthy peak; after this change none can, because nothing
-non-finite is ever written. The cost is one finite test and one clamp per written cell, below what a
-`deposit` call already spends on the disc walk.
+non-finite is ever written. The cost is one finite test per call and a `max`/`min` pair per written
+cell, below what a `deposit` call already spends on the disc walk (a `sqrt` and a divide per cell).
 
 ## Deviations
 
