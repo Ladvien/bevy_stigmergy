@@ -45,14 +45,14 @@ pub struct RallyGrid {
     deposit_radius: f32,
     /// Only floor cells receive value, so evaporation skips the rock cells.
     floor_cells: Vec<FloorCell>,
-    floor_mask: Vec<bool>,
+    cell_flags: Vec<u8>,
 }
 
 impl RallyGrid {
     /// Allocate an empty vector grid. `floor_cells` has the same contract as [`crate::StigGrid::new`].
     pub fn new(width: usize, height: usize, floor_cells: impl Iterator<Item = IVec2>, def: RallyDef) -> Self {
         let cells = width * height;
-        let (floor_cells, floor_mask) = floor_sets(width, height, floor_cells);
+        let (floor_cells, cell_flags) = floor_sets(width, height, floor_cells);
         Self {
             width,
             height,
@@ -61,7 +61,7 @@ impl RallyGrid {
             accumulate: def.accumulate,
             deposit_radius: def.deposit_radius,
             floor_cells,
-            floor_mask,
+            cell_flags,
         }
     }
 
@@ -80,9 +80,9 @@ impl RallyGrid {
         let (w, h) = (self.width, self.height);
         let accumulate = self.accumulate;
         let radius = self.deposit_radius;
-        let mask = &self.floor_mask;
+        let flags = &self.cell_flags;
         let grid = &mut self.grid;
-        deposit_disc(w, h, mask, center, radius, |i, falloff| {
+        deposit_disc(w, h, flags, center, radius, |i, falloff| {
             grid[i] += s * (accumulate * falloff);
         });
     }
